@@ -1,0 +1,6 @@
+discord.py[voice]>=2.6
+yt-dlp[default]
+aiosqlite>=0.20
+python-dotenv>=1.0
+tzdata
+Pillow>=10

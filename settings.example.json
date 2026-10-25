@@ -1,0 +1,182 @@
+{
+  "_comment": "Настройки по умолчанию. НЕ меняй этот файл: свои настройки — в settings.json (их пишет Мастер настройки, configure.pyw). В settings.json достаточно указать только то, что отличается — остальное берётся отсюда. Где у канала есть id — бот ищет его по id (можно переименовывать), иначе по названию.",
+
+  "bot": {
+    "name": "Бот сервера",
+    "server_name": "Мой сервер",
+    "timezone": "Europe/Moscow",
+    "tz_label": "МСК",
+    "nickname_on_server": ""
+  },
+
+  "modules": {
+    "welcome_card": true,
+    "music": true,
+    "voice_rooms": true,
+    "levels": true,
+    "birthdays": true,
+    "cinema": true,
+    "applications": true,
+    "family": false,
+    "protection": true,
+    "community": true,
+    "photo_only": true,
+    "server_stats": true,
+    "adult_channels": false,
+    "news_forward": false
+  },
+
+  "theme": {
+    "accent": "#9B78FF",
+    "accent2": "#00C8FF",
+    "welcome_banner": "assets/welcome_bg.png",
+    "welcome_title": "ДОБРО ПОЖАЛОВАТЬ",
+    "welcome_subtitle": "теперь с нами на сервере {server}"
+  },
+
+  "roles": {
+    "base": "✅ Участник",
+    "pending": "🔒 Анкета",
+    "staff": "Администрация",
+    "head_admin": "Главный админ",
+    "head_mod": "Главный модератор",
+    "mod": "Модератор",
+    "birthday": "🎂 Именинник",
+    "cinema": "🍿 Киноман",
+    "extra_reviewers": [],
+    "mini_admin_prefix": "mini Admin • "
+  },
+
+  "genders": [
+    ["♂️", "👨", "Парень"],
+    ["♀️", "👩", "Девушка"]
+  ],
+
+  "games": [
+    {"name": "Minecraft", "role": "Minecraft", "emoji": "💚"},
+    {"name": "CS2", "role": "CS2", "emoji": "💛"},
+    {"name": "GTA 5 RP", "role": "GTA", "emoji": "🧡"}
+  ],
+
+  "levels": {
+    "step": 50,
+    "cooldown": 3,
+    "roles": {"1000": "Писатель", "3000": "Болтун", "5000": "Легенда чата"}
+  },
+
+  "achievements": [
+    {"role": "🎧 Тусовщик", "desc": "10 часов в голосовых", "stat": "voice_min", "need": 600, "colour": "#1ABC9C"},
+    {"role": "🎙️ Голос сервера", "desc": "100 часов в голосовых", "stat": "voice_min", "need": 6000, "colour": "#16A085"},
+    {"role": "📸 Фотограф", "desc": "25 картинок в каналах «скриншоты»", "stat": "screens", "need": 25, "colour": "#3498DB"},
+    {"role": "🌙 Полуночник", "desc": "100 сообщений ночью (00:00–05:00)", "stat": "night", "need": 100, "colour": "#34495E"},
+    {"role": "🎵 Меломан", "desc": "50 раз включил музыку через /play или /genre", "stat": "tracks", "need": 50, "colour": "#9B59B6"},
+    {"role": "🔥 Активист", "desc": "Писал в чат 7 дней подряд", "stat": "best_streak", "need": 7, "colour": "#E67E22"},
+    {"role": "🎮 Мультигеймер", "desc": "Выбрал 3 и больше игр", "stat": "games", "need": 3, "colour": "#2ECC71"},
+    {"role": "🏛️ Старожил", "desc": "На сервере больше года", "stat": "days", "need": 365, "colour": "#BDC3C7"},
+    {"role": "🌟 Звезда чата", "desc": "5 сообщений попали в ⭐・лучшее", "stat": "stars", "need": 5, "colour": "#F1C40F"}
+  ],
+
+  "custom_roles": [],
+  "custom_role_owners": {},
+
+  "channels": {
+    "main": {"name": "━━❘│💬・Общение", "id": null},
+    "info": "━━❘│📢・Информация",
+    "activity": "━━❘│📊・Активность",
+    "voice": "━━❘│🔊・Голосовые",
+    "joins": "🎉・новички",
+    "welcome": "👋・старт",
+    "rules": {"name": "📜・правила", "id": null},
+    "news": "🔔・новости",
+    "general": {"name": "💬・общий-чат", "id": null},
+    "memes": "😂・мемы",
+    "birthdays": "📅・календарь",
+    "rooms_panel": {"name": "🎮・управление-комнатой", "id": null},
+    "voice_creator": "➕・Создать канал",
+    "levels": "📊・уровни",
+    "achievements": "📊・достижения",
+    "stats_prefix": "👥・Участников: "
+  },
+
+  "admin": {
+    "category": "━━❘│🛠️・Админка",
+    "panel": "🛠️・админ-панель",
+    "mini_panel": "🧩・mini-панель",
+    "chat": "💬・админ-чат",
+    "log": "📋・логи",
+    "mod_panel": "🛡️・мод-панель",
+    "mod_chat": "💬・мод-чат",
+    "ratings": "🏆・рейтинги"
+  },
+
+  "adult": {
+    "girls_channel": "🌸・девочки",
+    "boys_channel": "💪・мальчики",
+    "girls_role": "🔞 Девочки 18+",
+    "boys_role": "🔞 Мальчики 18+"
+  },
+
+  "family": {
+    "name": "Моя семья",
+    "game": "",
+    "category": "━━❘│🧡・Семья",
+    "apply": "📝・заявка-в-семью",
+    "requests": "💭・заявки-в-семью",
+    "probation": "⏰・испытательный-срок",
+    "hr": "📋・hr-chat",
+    "hr_reports": "📊・отчёты-hr",
+    "probation_days": 14,
+    "roles": [
+      ["👑 Основатель семьи", "#E74C3C", true],
+      ["Заместитель основателя семьи", "#2ECC71", true],
+      ["Ответственный", "#3498DB", false],
+      ["Старший HR", "#E67E22", true],
+      ["HR Manager", "#F1C40F", true]
+    ],
+    "probation_role": "⏰ Испытательный срок",
+    "member_role": "🧡 Семья"
+  },
+
+  "applications": {
+    "category": "━━❘│📝・Заявки в состав",
+    "apply": "📝・подать-заявку",
+    "review": "📨・заявки-в-администрацию",
+    "voice": "🎙️・Ожидание обзвона",
+    "cooldown_days": 7,
+    "review_days": 2
+  },
+
+  "cinema": {
+    "category": "━━❘│🎬・Кинотеатр",
+    "afisha": "🎬・афиша",
+    "hall": "🎬・Кинозал",
+    "wishlist": "🍿・подборка",
+    "talk": "🎬・кино-обсуждение",
+    "setup": "🎬・кино-настройки"
+  },
+
+  "protection": {
+    "flood_messages": 6, "flood_seconds": 5,
+    "repeat_messages": 3, "repeat_seconds": 30,
+    "max_mentions": 5,
+    "timeout_minutes": 10, "scam_timeout_minutes": 60,
+    "raid_joins": 8, "raid_seconds": 60,
+    "new_account_days": 7
+  },
+
+  "photo_only": {"keywords": ["скриншот"], "delay": 120},
+
+  "community": {
+    "ideas": "💡・идеи",
+    "starboard": "⭐・лучшее",
+    "star_emoji": "⭐",
+    "star_count": 10,
+    "digest_weekday": 6,
+    "digest_hour": 20
+  },
+
+  "birthday_hour": 10,
+  "limited_bot_roles": [],
+  "shop_roles": [],
+  "role_descriptions": {}
+}

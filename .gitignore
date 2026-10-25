@@ -1,0 +1,23 @@
+# Секреты и данные конкретного сервера — НИКОГДА не в git
+.env
+settings.json
+rules.json
+host.json
+bot.db
+bot.db-*
+*.db
+version.txt
+bot.log
+*.log
+runtime/
+assets/welcome_bg.png
+
+# Окружение
+.venv/
+__pycache__/
+*.pyc
+
+# Разовые скрипты конкретного сервера
+tools/legacy/
+tools/backup*
+migrate.bat
