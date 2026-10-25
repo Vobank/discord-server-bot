@@ -23,7 +23,8 @@
     "photo_only": true,
     "server_stats": true,
     "adult_channels": false,
-    "news_forward": false
+    "news_forward": false,
+    "hide_thread_notices": true
   },
 
   "theme": {

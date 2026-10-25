@@ -52,6 +52,7 @@ MODULES = [
     ("server_stats", "👥 Счётчик участников", "Голосовой канал «Участников: N», обновляется сам"),
     ("adult_channels", "🔞 Каналы 18+", "Закрытые каналы для девочек и мальчиков 18+ (по анкете)"),
     ("news_forward", "📰 Пересылка новостей", "Копирует посты из канала другого сервера в ваш канал"),
+    ("hide_thread_notices", "🧹 Без «начал(а) ветку»", "Бот сразу удаляет служебное сообщение о новой ветке во всех каналах"),
 ]
 TIMEZONES = ["Europe/Moscow", "Europe/Kaliningrad", "Europe/Samara", "Asia/Yekaterinburg", "Asia/Omsk",
              "Asia/Novosibirsk", "Asia/Krasnoyarsk", "Asia/Irkutsk", "Asia/Yakutsk", "Asia/Vladivostok",

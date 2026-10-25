@@ -45,6 +45,7 @@ COGS = {
     "cogs.protection": "protection",
     "cogs.community": "community",
     "cogs.photo_only": "photo_only",
+    "cogs.cleanup": "hide_thread_notices",
 }
 
 log = logging.getLogger("bot")

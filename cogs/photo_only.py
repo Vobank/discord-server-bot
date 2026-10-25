@@ -28,6 +28,8 @@ class PhotoOnly(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
+        if message.type not in (discord.MessageType.default, discord.MessageType.reply):  # служебные — не наше
+            return
         if message.author.bot or not is_photo_channel(message.channel) or has_media(message):
             return
         key = (message.channel.id, message.author.id)
