@@ -185,6 +185,24 @@ foreach ($p in @(@({ps_quote(name)}, 'control_panel.pyw', 'Панель упра
                    creationflags=NO_WINDOW, timeout=60)
 
 
+PRIOS = ["1 — главный", "2 — запасной", "3 — запасной", "4 — запасной", "5 — запасной"]
+MODES = {"auto": "Автоматически (в очереди)", "manual": "Только когда нажму «📌 Забрать бота сюда»"}
+KINDS = {"pc": "Компьютер с Windows", "server": "Хостинг / сервер (Linux, Docker)"}
+
+
+def prio_label(n: int) -> str:
+    return PRIOS[n - 1] if 1 <= n <= len(PRIOS) else f"{n} — запасной"
+
+
+def prio_value(text: str) -> int:
+    m = re.match(r"\s*(\d+)", text or "")
+    return max(1, int(m[1])) if m else 2
+
+
+def mode_value(text: str) -> str:
+    return next((k for k, v in MODES.items() if v == text), "auto")
+
+
 def sample_avatar() -> bytes:
     from PIL import Image, ImageDraw
     img = Image.new("RGB", (256, 256))
@@ -255,7 +273,7 @@ class App(tk.Tk):
         for key, label, build in [
             ("conn", "🔑  Подключение", self.page_conn), ("main", "📝  Основное", self.page_main),
             ("modules", "🧩  Модули", self.page_modules), ("games", "🎮  Игры и отделы", self.page_games),
-            ("design", "🎨  Оформление", self.page_design), ("pcs", "🖥️  Два ПК", self.page_pcs),
+            ("design", "🎨  Оформление", self.page_design), ("pcs", "🖥️  Несколько ПК", self.page_pcs),
         ]:
             frame = tk.Frame(self.content, bg=BG)
             build(frame)
@@ -648,63 +666,86 @@ class App(tk.Tk):
         sc = Scroll(page)
         sc.pack(fill="both", expand=True)
         p = sc.body
-        self.header(p, "🖥️ Два ПК — бот не выключается", (
-            "Бот можно поставить на два компьютера. Работает всегда ровно один: если главный ПК выключился — "
-            "через минуту бот сам запустится на втором. База (уровни, дни рождения…) и обновления кода "
-            "переезжают между ПК сами через закрытый канал 🔧・bot-sync на сервере.\n\n"
+        self.header(p, "🖥️ Несколько ПК и хостинг — бот не выключается", (
+            "Бота можно поставить на несколько компьютеров (до 5 и больше) и/или на хостинг. Работает всегда ровно "
+            "один: если он выключился — через минуту бот сам продолжит на другом. База (уровни, дни рождения…), "
+            "настройки и обновления переезжают сами через закрытый канал 🔧・bot-sync на сервере. "
+            "Управлять можно с любого ПК: в панели видно все компьютеры, есть «📌 Забрать бота сюда».\n\n"
             "1. Нажми «Включить синхронизацию» (бот должен быть уже на сервере).\n"
-            "2. Нажми «Собрать установщик» — на рабочем столе появится архив. Отправь его другу "
-            "ЛИЧНО (там ключ бота!). Он распаковывает и запускает УСТАНОВИТЬ.bat — всё."))
+            "2. Для каждого ПК нажми «Собрать установщик» — на рабочем столе появится архив. Отправь его "
+            "ЛИЧНО (там ключ бота!). Там распаковать и запустить УСТАНОВИТЬ.bat — всё. Для хостинга — "
+            "инструкция внутри архива."))
         self.sync_label = tk.Label(p, font=BOLD, bg=BG, justify="left")
         self.sync_label.pack(anchor="w", padx=24, pady=4)
         self.refresh_sync()
-        self.section(p, "Этот ПК")
-        self.field(p, "host.name", "Имя этого ПК", self.host.get("name", ""))
-        self.field(p, "host.priority", "Роль этого ПК", "1 — главный" if self.host.get("priority", 1) == 1
-                   else "2 — запасной", values=["1 — главный", "2 — запасной"], width=20,
-                   hint="главный забирает бота себе, когда включается")
         row = tk.Frame(p, bg=BG)
         row.pack(fill="x", padx=20)
         self.button(row, "🔗 Включить синхронизацию", self.enable_sync, GREEN)
-        self.section(p, "Установщик для второго ПК")
-        self.field(p, "friend.name", "Имя второго ПК", "ПК друга")
-        self.field(p, "friend.priority", "Его роль", "2 — запасной", values=["1 — главный", "2 — запасной"],
-                   width=20)
+
+        self.section(p, "Как выбирать, где работать")
+        var = tk.BooleanVar(value=bool(self.S.get("multi_pc", {}).get("balance", True)))
+        self.vars["bool.multi_pc.balance"] = var
+        tk.Checkbutton(p, text="⚖️ Самый свободный ПК: если на ПК с ботом играют и он загружен, а другой свободнее — "
+                               "бот переедет туда", variable=var, font=BOLD, fg=FG, bg=BG, selectcolor=CARD,
+                       activebackground=BG, activeforeground=FG, wraplength=760, justify="left").pack(anchor="w", padx=20)
+        tk.Label(p, text="Не чаще раза в 10 минут и не во время музыки. Выключено — строго по номеру в очереди: "
+                         "№1 всегда забирает бота себе.", font=("Segoe UI", 9), fg=MUTED, bg=BG).pack(anchor="w", padx=46)
+
+        self.section(p, "Этот ПК")
+        self.field(p, "host.name", "Имя этого ПК", self.host.get("name", ""))
+        self.field(p, "host.priority", "Номер в очереди", prio_label(self.host.get("priority", 1)), values=PRIOS,
+                   width=20, hint="№1 — главный, дальше — запасные по порядку")
+        self.field(p, "host.mode", "Когда брать бота", MODES[self.host.get("mode", "auto")], values=list(MODES.values()),
+                   width=34)
+
+        self.section(p, "Установщик для другого ПК или хостинга")
+        self.field(p, "friend.name", "Имя", "ПК друга", hint="как он будет виден в списке")
+        self.field(p, "friend.kind", "Куда ставим", KINDS["pc"], values=list(KINDS.values()), width=34)
+        self.field(p, "friend.priority", "Номер в очереди", PRIOS[1], values=PRIOS, width=20)
+        self.field(p, "friend.mode", "Когда брать бота", MODES["auto"], values=list(MODES.values()), width=34)
         row = tk.Frame(p, bg=BG)
-        row.pack(fill="x", padx=20)
+        row.pack(fill="x", padx=20, pady=(0, 16))
         self.button(row, "📦 Собрать установщик на рабочий стол", self.make_package, YELLOW)
 
     def refresh_sync(self):
         env = read_env()
         if env.get("SYNC_CHANNEL_ID"):
-            self.sync_label.configure(text="✅ Синхронизация включена — можно ставить второй ПК", fg=GREEN)
+            self.sync_label.configure(text="✅ Синхронизация включена — можно ставить другие ПК и хостинг", fg=GREEN)
         else:
             self.sync_label.configure(text="⚪ Сейчас бот работает на одном ПК", fg=MUTED)
 
     def enable_sync(self):
         if read_env().get("SYNC_CHANNEL_ID"):
-            return messagebox.showinfo("Два ПК", "Синхронизация уже включена — можно сразу собирать установщик.")
+            return messagebox.showinfo("Несколько ПК", "Синхронизация уже включена — можно сразу собирать установщики.")
         if not self.save(quiet=True):
             return
-        self.run_tool("Синхронизация двух ПК", [os.path.join("tools", "setup_sync.py")],
+        self.run_tool("Синхронизация ПК", [os.path.join("tools", "setup_sync.py")],
                       done=lambda ok: (self.refresh_sync(), ok and self.offer_restart()))
 
     def offer_restart(self):
-        if supervisor_running() and messagebox.askyesno("Перезапуск", "Перезапустить бота, чтобы включить режим двух ПК?"):
+        if supervisor_running() and messagebox.askyesno("Перезапуск", "Перезапустить бота, чтобы включить режим нескольких ПК?"):
             with open(os.path.join(APP, "runtime", "command.txt"), "w", encoding="utf-8") as f:
                 f.write("stop")
             self.after(20000, lambda: subprocess.Popen(["wscript.exe", os.path.join(APP, "tools", "run_hidden.vbs")]))
             self.say("Бот перезапустится через ~20 секунд")
 
     def make_package(self):
+        kind = next((k for k, v in KINDS.items() if v == self.vars["friend.kind"].get()), "pc")
         if not read_env().get("SYNC_CHANNEL_ID"):
-            return messagebox.showwarning("Сначала синхронизация", "Сначала нажми «Включить синхронизацию».")
+            if kind == "pc":
+                return messagebox.showwarning("Сначала синхронизация", "Сначала нажми «Включить синхронизацию».")
+            if not messagebox.askyesno("Только хостинг?", (
+                    "Синхронизация не включена — значит бот будет работать ТОЛЬКО на хостинге.\n"
+                    "На этом ПК его тогда нужно остановить (панель → ⏹ Остановить), иначе будет два бота.\n\n"
+                    "Если хочешь, чтобы хостинг и этот ПК подменяли друг друга — нажми «Нет» и сначала "
+                    "«Включить синхронизацию».\n\nСобрать архив только для хостинга?")):
+                return
         if not self.save(quiet=True):
             return
-        prio = "1" if self.vars["friend.priority"].get().startswith("1") else "2"
-        self.run_tool("Установщик для второго ПК", [os.path.join("tools", "make_package.py"),
-                                                    "--name", self.vars["friend.name"].get() or "Второй ПК",
-                                                    "--priority", prio])
+        self.run_tool("Установщик", [os.path.join("tools", "make_package.py"),
+                                     "--name", self.vars["friend.name"].get() or "Второй ПК",
+                                     "--priority", str(prio_value(self.vars["friend.priority"].get())),
+                                     "--mode", mode_value(self.vars["friend.mode"].get()), "--kind", kind])
 
     # ---------- сохранение ----------
     def collect(self) -> tuple[dict, dict] | None:
@@ -733,6 +774,9 @@ class App(tk.Tk):
                 node[last] = value
             elif kind == "module":
                 S["modules"][path] = bool(value)
+            elif kind == "bool":
+                section, _, name = path.partition(".")
+                S.setdefault(section, {})[name] = bool(value)
         env["GUILD_ID"] = self.guild_id()
         S["games"] = self.games
         S["theme"]["accent"], S["theme"]["accent2"] = self.colours["accent"], self.colours["accent2"]
@@ -754,8 +798,9 @@ class App(tk.Tk):
         S, env = got
         save_settings(S)
         write_env({k: v for k, v in env.items() if v or k in ("VK_TOKEN", "NEWS_FORWARDS")})
-        host = {"name": self.vars["host.name"].get().strip() or self.host.get("name"),
-                "priority": 1 if self.vars["host.priority"].get().startswith("1") else 2,
+        host = {**self.host, "name": self.vars["host.name"].get().strip() or self.host.get("name"),
+                "priority": prio_value(self.vars["host.priority"].get()),
+                "mode": mode_value(self.vars["host.mode"].get()),
                 "id": self.host.get("id") or re.sub(r"\W+", "-", self.vars["host.name"].get().lower()) or "pc"}
         with open(HOST_PATH, "w", encoding="utf-8") as f:
             json.dump(host, f, ensure_ascii=False, indent=1)

@@ -4,3 +4,4 @@ aiosqlite>=0.20
 python-dotenv>=1.0
 tzdata
 Pillow>=10
+psutil>=5.9

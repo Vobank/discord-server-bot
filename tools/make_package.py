@@ -1,6 +1,7 @@
-"""Собрать архив-установщик для второго ПК: код + настройки + ключ + установщик. Запускает Мастер настройки.
-  make_package.py --name "ПК друга" --priority 2 [--out папка]
-priority: 1 — главный (забирает бота себе, когда включён), 2 — запасной. Архив — на рабочий стол."""
+"""Собрать архив-установщик для другого ПК или хостинга: код + настройки + ключ + установщик. Запускает Мастер.
+  make_package.py --name "ПК друга" --priority 2 [--mode auto|manual] [--kind pc|server] [--out папка]
+priority: 1 — главный, 2…5 — запасные по очереди. mode manual — этот ПК берёт бота только по кнопке.
+kind server — архив для хостинга/VPS/Docker (Linux), инструкция внутри. Архив — на рабочий стол."""
 import argparse
 import json
 import os
@@ -16,9 +17,9 @@ sys.path.insert(0, APP)
 import config  # noqa: E402
 import sync  # noqa: E402
 
-SKIP_DIRS = {".venv", "runtime", "__pycache__", ".git", "legacy", ".github"}
+SKIP_DIRS = {".venv", "runtime", "__pycache__", ".git", "legacy", ".github", "docs"}
 SKIP_FILES = {"bot.db", "bot.log", "host.json", "bot.db-journal", "version.txt"}
-README = """{bot} — УСТАНОВКА НА ВТОРОЙ ПК (делать один раз)
+README_PC = """{bot} — УСТАНОВКА НА ЭТОТ ПК (делать один раз)
 
 1. Распакуй этот архив (правой кнопкой → «Извлечь всё»).
 2. Открой распакованную папку и дважды нажми «УСТАНОВИТЬ.bat».
@@ -28,12 +29,41 @@ README = """{bot} — УСТАНОВКА НА ВТОРОЙ ПК (делать о
 Всё! Дальше ничего делать не нужно:
   • бот сам включается вместе с компьютером;
   • обновления бот скачивает и ставит сам;
-  • если твой ПК выключен — бот работает на ПК «{other}», и наоборот.
-
-На рабочем столе появится ярлык «{bot}» — там видно, работает ли бот (зелёный кружок — работает у тебя,
-жёлтый — работает на другом ПК, это тоже нормально).
+  • работает всегда только один ПК — если тот, где бот, выключится, бот сам продолжит на другом.
+{mode_note}
+На рабочем столе появится ярлык «{bot}» — там видно все компьютеры и где сейчас работает бот
+(🟢 — у тебя, 🟡 — на другом ПК, это тоже нормально). Кнопка «📌 Забрать бота сюда» — перенести бота к себе.
 
 ⚠ В архиве лежит ключ от бота. Никому его не пересылай и не выкладывай.
+"""
+README_SERVER = """{bot} — ЗАПУСК НА ХОСТИНГЕ / СЕРВЕРЕ (Linux)
+
+Имя в списке компьютеров: «{name}», номер в очереди: {priority}.
+{sync_note}
+Выбери свой вариант:
+
+━━ А. VPS / выделенный сервер (Ubuntu или Debian, есть доступ по SSH) ━━
+  1. Залей архив на сервер и распакуй:   unzip "{zip}" -d ~ && cd ~/DiscordBot
+  2. Запусти установку:                    bash install/install.sh
+     Скрипт поставит Python, FFmpeg, Deno, библиотеки и включит автозапуск (служба discord-bot).
+  Полезное:  sudo systemctl status discord-bot   — работает ли
+             sudo journalctl -u discord-bot -f   — лог
+             sudo systemctl restart discord-bot  — перезапуск
+
+━━ Б. Docker (любая ОС с Docker) ━━
+  1. Распакуй архив и зайди в папку DiscordBot.
+  2. docker compose up -d --build
+  Бот работает в контейнере и сам поднимается после перезагрузки. Лог: docker compose logs -f
+
+━━ В. Хостинг с панелью для ботов (Pterodactyl и т.п., «Python»-сервер) ━━
+  1. Загрузи СОДЕРЖИМОЕ папки DiscordBot в файлы сервера (вместе со скрытым файлом .env).
+  2. В настройках запуска: файл запуска — supervisor.py, файл зависимостей — requirements.txt
+     (если просят команду: pip install -r requirements.txt && python supervisor.py).
+  3. Запусти сервер в панели.
+  ⚠ Для музыки на хостинге должен быть FFmpeg — спроси поддержку, если /play не играет.
+
+Обновления хостинг ставит сам (их публикуют с любого ПК кнопкой «📤 Опубликовать обновление»).
+⚠ В архиве лежит ключ от бота (.env). Не выкладывай его в открытый доступ.
 """
 
 
@@ -51,13 +81,16 @@ def desktop() -> str:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--name", default="Второй ПК")
-    ap.add_argument("--priority", type=int, default=2, choices=(1, 2))
+    ap.add_argument("--priority", type=int, default=2)
+    ap.add_argument("--mode", default="auto", choices=("auto", "manual"))
+    ap.add_argument("--kind", default="pc", choices=("pc", "server"))
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
-    if not sync.SYNC_CHANNEL_ID:
-        raise SystemExit("Сначала включи синхронизацию двух ПК (Мастер настройки → «Два ПК»)")
-    friend = {"name": args.name, "priority": args.priority, "id": re.sub(r"\W+", "-", args.name.lower()).strip("-")
-              or "second-pc"}
+    synced = bool(sync.SYNC_CHANNEL_ID)
+    if not synced and args.kind == "pc":
+        raise SystemExit("Сначала включи синхронизацию ПК (Мастер настройки → «Несколько ПК»)")
+    friend = {"name": args.name, "priority": max(1, args.priority), "mode": args.mode, "kind": args.kind,
+              "id": re.sub(r"\W+", "-", args.name.lower()).strip("-") or "second-pc"}
     stage = tempfile.mkdtemp()
     root = os.path.join(stage, "DiscordBot")
     for dirpath, dirs, files in os.walk(APP):
@@ -71,12 +104,24 @@ def main():
             shutil.copy2(os.path.join(dirpath, name), dst)
     with open(os.path.join(root, "host.json"), "w", encoding="utf-8") as f:
         json.dump(friend, f, ensure_ascii=False)
-    with open(os.path.join(root, "ПРОЧТИ.txt"), "w", encoding="utf-8-sig") as f:
-        f.write(README.format(bot=config.BOT_NAME, other=sync.host_info()["name"]))
-    out_dir = args.out or desktop()
     bad = r'[\\/:*?"<>|]'
     safe, who = re.sub(bad, "", config.BOT_NAME).strip() or "Bot", re.sub(bad, "", args.name).strip()
-    out = os.path.join(out_dir, f"{safe} — установщик для {who}.zip")
+    zip_name = f"{safe} — для хостинга ({who}).zip" if args.kind == "server" else f"{safe} — установщик для {who}.zip"
+    if args.kind == "server":
+        note = ("Синхронизация включена: хостинг — один из компьютеров с ботом, они подменяют друг друга.\n"
+                if synced else
+                "⚠ Синхронизация НЕ включена: бот будет работать только здесь. На ПК его нужно остановить!\n")
+        text = README_SERVER.format(bot=config.BOT_NAME, name=args.name, priority=friend["priority"],
+                                    sync_note=note, zip=zip_name)
+        with open(os.path.join(root, "ПРОЧТИ-ХОСТИНГ.txt"), "w", encoding="utf-8") as f:
+            f.write(text)
+    else:
+        mode_note = ("\n  • этот ПК в режиме «только по кнопке»: бот сюда приходит, только когда нажмёшь\n"
+                     "    в панели «📌 Забрать бота сюда».\n" if args.mode == "manual" else "")
+        with open(os.path.join(root, "ПРОЧТИ.txt"), "w", encoding="utf-8-sig") as f:
+            f.write(README_PC.format(bot=config.BOT_NAME, mode_note=mode_note))
+    out_dir = args.out or desktop()
+    out = os.path.join(out_dir, zip_name)
     with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
         for dirpath, _, files in os.walk(root):
             for name in files:
@@ -84,7 +129,12 @@ def main():
                 z.write(full, os.path.relpath(full, stage))
     shutil.rmtree(stage, ignore_errors=True)
     print(f"✅ Архив: {out}\n   {os.path.getsize(out) // 1024} КБ, версия кода {sync.local_version()}")
-    print("\nОтправь его на второй ПК ЛИЧНО (в архиве ключ бота!). Там: распаковать → УСТАНОВИТЬ.bat.")
+    if args.kind == "server":
+        print("\nЗалей его на хостинг и сделай, как написано в ПРОЧТИ-ХОСТИНГ.txt внутри архива.")
+        if not synced:
+            print("⚠ Синхронизация не включена — после запуска на хостинге останови бота на этом ПК!")
+    else:
+        print("\nОтправь его на тот ПК ЛИЧНО (в архиве ключ бота!). Там: распаковать → УСТАНОВИТЬ.bat.")
 
 
 if __name__ == "__main__":

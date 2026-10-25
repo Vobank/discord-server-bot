@@ -41,7 +41,13 @@ def host_info() -> dict:
         data = {"name": socket.gethostname(), "priority": 2}
         with open(path, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=1)
-    data.setdefault("id", socket.gethostname())
+    # на хостинге удобнее задать через переменные окружения
+    if os.getenv("HOST_NAME"):
+        data["name"] = os.getenv("HOST_NAME")
+    if (os.getenv("HOST_PRIORITY") or "").isdigit():
+        data["priority"] = int(os.getenv("HOST_PRIORITY"))
+    data.setdefault("id", os.getenv("HOST_ID") or socket.gethostname())
+    data["kind"] = os.getenv("HOST_KIND") or data.get("kind") or "pc"  # pc — компьютер с панелью, server — хостинг/VPS
     return data
 
 
@@ -66,7 +72,7 @@ class Discord:
 
     async def __aenter__(self):
         self.session = aiohttp.ClientSession(headers={"Authorization": f"Bot {TOKEN}",
-                                                      "User-Agent": "RestBotSync (local, 1.0)"})
+                                                      "User-Agent": "DiscordBotSync (local, 1.0)"})
         return self
 
     async def __aexit__(self, *exc):
@@ -118,6 +124,28 @@ class Discord:
                     continue
                 out.append({"id": m["id"], "meta": meta, "url": m["attachments"][0]["url"]})
         return out
+
+    # --- текстовые сообщения: «HOST …» — кто из ПК на связи, «CMD …» — команды между ПК ---
+    async def messages(self, kind: str, limit: int = 100) -> list[dict]:
+        """Сообщения вида «KIND {json}» без файла, новые — первыми."""
+        msgs = await self.request("GET", f"/channels/{SYNC_CHANNEL_ID}/messages?limit={limit}")
+        out = []
+        for m in msgs:
+            c = m.get("content", "")
+            if c.startswith(kind + " ") and not m.get("attachments"):
+                try:
+                    out.append({"id": m["id"], "meta": json.loads(c[len(kind) + 1:])})
+                except json.JSONDecodeError:
+                    continue
+        return out
+
+    async def send_text(self, kind: str, meta: dict) -> dict:
+        return await self.request("POST", f"/channels/{SYNC_CHANNEL_ID}/messages",
+                                  json={"content": (f"{kind} " + json.dumps(meta, ensure_ascii=False))[:2000]})
+
+    async def edit_text(self, message_id: str, kind: str, meta: dict):
+        await self.request("PATCH", f"/channels/{SYNC_CHANNEL_ID}/messages/{message_id}",
+                           json={"content": (f"{kind} " + json.dumps(meta, ensure_ascii=False))[:2000]})
 
     async def download(self, url: str) -> bytes:
         async with self.session.get(url) as r:

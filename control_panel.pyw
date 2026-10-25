@@ -79,6 +79,22 @@ def uptime(ts: float) -> str:
     return (f"{d} д " if d else "") + f"{h} ч {s // 60} мин"
 
 
+def host_line(h: dict, st: dict) -> tuple[str, str]:
+    """Строка списка ПК и её цвет: 🟢 работает бот, 🟡 на связи в резерве, ⚪ не в сети."""
+    online = time.time() - h.get("ts", 0) < 150
+    running = online and h.get("id") == (st.get("active_id") or "") or (online and h.get("state") == "active")
+    kind = "🌐" if h.get("kind") == "server" else "🖥"
+    pin = " 📌" if st.get("pinned") == h.get("id") else ""
+    pin += " · вручную" if h.get("mode") == "manual" else ""
+    pin += f" · нагрузка {h['load']}%" if online and h.get("load") is not None else ""
+    me = " (этот)" if h.get("id") == st["me"].get("id") else ""
+    if running:
+        return f"● {kind} {h['name']}{me} · №{h.get('priority')} · работает бот{pin}", GREEN
+    if online:
+        return f"● {kind} {h['name']}{me} · №{h.get('priority')} · в резерве", YELLOW
+    return f"● {kind} {h['name']}{me} · №{h.get('priority')} · не в сети ({ago(h.get('ts', 0))})", MUTED
+
+
 def send(cmd: str):
     with open(COMMAND, "w", encoding="utf-8") as f:
         f.write(cmd)
@@ -90,7 +106,7 @@ class Panel(tk.Tk):
         self.title(NAME)
         self.configure(bg=BG)
         k = self.winfo_fpixels("1i") / 96  # масштаб экрана
-        self.geometry(f"{int(460 * k)}x{int(610 * k)}")
+        self.geometry(f"{int(480 * k)}x{int(800 * k)}")
         self.resizable(False, False)
         ico = os.path.join(APP, "assets", "icon.ico")
         if os.path.exists(ico):
@@ -112,12 +128,21 @@ class Panel(tk.Tk):
         self.info = tk.Label(self, font=("Consolas", 10), fg=FG, bg=BG, justify="left", anchor="w")
         self.info.pack(fill="x", padx=24)
 
-        grid = tk.Frame(self, bg=BG)
+        self.hosts_card = tk.Frame(self, bg=CARD, padx=14, pady=8)
+        tk.Label(self.hosts_card, text="Компьютеры с ботом", font=("Segoe UI", 10, "bold"), fg=FG, bg=CARD,
+                 anchor="w").pack(fill="x")
+        self.host_rows = [tk.Label(self.hosts_card, font=("Segoe UI", 9), bg=CARD, anchor="w") for _ in range(8)]
+
+        grid = self.grid_frame = tk.Frame(self, bg=BG)
         grid.pack(padx=18, pady=14, fill="x")
         buttons = [
             ("▶  Запустить", self.start, GREEN), ("⏹  Остановить", self.stop, RED),
-            ("🔄  Перезапустить бота", lambda: self.cmd("restart_bot", "Бот перезапускается…"), ACCENT),
-            ("💾  Сохранить базу", lambda: self.cmd("backup", "База будет сохранена в Discord"), ACCENT),
+            ("🔄  Перезапустить бота", lambda: self.cmd("restart_bot", "Бот перезапускается (где бы он ни работал)…"),
+             ACCENT),
+            ("💾  Сохранить базу", lambda: self.cmd("backup", "База будет сохранена"), ACCENT),
+            ("📌  Забрать бота сюда", self.take_here, ACCENT),
+            ("↩  Вернуть по приоритету", lambda: self.multi_cmd("unpin", "Бот вернётся на главный ПК по приоритету"),
+             ACCENT),
             ("📤  Опубликовать обновление", self.publish, YELLOW),
             ("⬇  Проверить обновления", lambda: self.cmd("check_update", "Проверяю обновления…"), ACCENT),
             ("📜  Лог бота", lambda: self.open_file("bot.log"), MUTED),
@@ -146,16 +171,16 @@ class Panel(tk.Tk):
         else:
             me = st["me"]
             solo = not two_pcs()
-            self.host.config(text="Режим: один ПК" if solo else f"Этот ПК: {me['name']} · приоритет {me['priority']} "
-                                  f"({'основной' if me['priority'] == 1 else 'запасной'})")
+            self.host.config(text="Режим: один ПК" if solo else f"Этот ПК: {me['name']} · №{me['priority']} в очереди "
+                                  f"({'главный' if me['priority'] == 1 else 'запасной'})")
             if st["state"] == "active" and solo:
                 self.dot.config(fg=GREEN if st.get("bot_running") else YELLOW)
                 self.state.config(text="Работает" if st.get("bot_running") else "Запускается…")
-                self.sub.config(text="Бот онлайн. Хочешь второй ПК на подмену — Настройки → «Два ПК».")
+                self.sub.config(text="Бот онлайн. Хочешь ПК на подмену или хостинг — Настройки → «Несколько ПК».")
             elif st["state"] == "active":
                 self.dot.config(fg=GREEN)
                 self.state.config(text="Работает на этом ПК")
-                self.sub.config(text="Бот онлайн. Второй ПК в резерве и подхватит, если этот выключится.")
+                self.sub.config(text=st.get("note") or "Бот онлайн. Запасные ПК подхватят, если этот выключится.")
             else:
                 self.dot.config(fg=YELLOW)
                 self.state.config(text="В резерве")
@@ -166,7 +191,47 @@ class Panel(tk.Tk):
                 f"Бот запущен:     {uptime(st.get('bot_started') or 0)}\n"
                 f"База сохранена:  {'копия на диске раз в день' if solo else ago(st.get('last_db_upload') or 0)}\n"
                 f"Версия кода:     {st.get('version') or '—'}"))
+            self.show_hosts(st, solo)
+        if st is None:
+            self.hosts_card.pack_forget()
         self.after(2000, self.refresh)
+
+    def show_hosts(self, st: dict, solo: bool):
+        hosts = st.get("hosts") or []
+        if solo or not hosts:
+            self.hosts_card.pack_forget()
+            return
+        if not self.hosts_card.winfo_ismapped():
+            self.hosts_card.pack(fill="x", padx=18, pady=(10, 0), before=self.grid_frame)
+        active_name = st.get("active_host")
+        for i, row in enumerate(self.host_rows):
+            if i < len(hosts):
+                h = dict(hosts[i])
+                if h.get("name") == active_name and time.time() - (st.get("active_ts") or 0) < 90:
+                    h["state"] = "active"
+                elif h.get("state") == "active":
+                    h["state"] = "standby"
+                text, colour = host_line(h, st)
+                row.config(text=text, fg=colour)
+                row.pack(fill="x")
+            else:
+                row.pack_forget()
+
+    def multi_cmd(self, c: str, text: str):
+        if not two_pcs():
+            return self.say("Это для нескольких ПК — включи их в Настройках")
+        self.cmd(c, text)
+
+    def take_here(self):
+        st = read_status()
+        if not two_pcs():
+            return self.say("Это для нескольких ПК — включи их в Настройках")
+        if st and st.get("state") == "active":
+            send("take_here")
+            return self.say("📌 Бот закреплён за этим ПК — другие не заберут его по приоритету")
+        if messagebox.askyesno(NAME, "Забрать бота на этот ПК?\n\nОн закрепится здесь, пока не нажмёшь "
+                                     "«↩ Вернуть по приоритету» или пока этот ПК не выключится."):
+            self.cmd("take_here", "Прошу бота сюда — около 30 секунд…")
 
     def say(self, text: str):
         self.toast.config(text=text)
@@ -188,7 +253,7 @@ class Panel(tk.Tk):
         if read_status() is None:
             return self.say("И так остановлен")
         if messagebox.askyesno(NAME, "Остановить бота на этом ПК?\n\n"
-                                           "Если второй ПК включён — бот сразу продолжит работать там."):
+                                           "Если включён другой ПК — бот сразу продолжит работать там."):
             send("stop")
             self.say("Останавливаю…")
 
@@ -198,8 +263,8 @@ class Panel(tk.Tk):
 
     def publish(self):
         if not two_pcs():
-            return messagebox.showinfo(NAME, "Обновления рассылаются на второй ПК.\nСейчас бот работает на одном ПК — "
-                                             "включить второй можно в Настройках, вкладка «Два ПК».")
+            return messagebox.showinfo(NAME, "Обновления рассылаются на другие ПК.\nСейчас бот работает на одном ПК — "
+                                             "добавить ещё можно в Настройках, вкладка «Несколько ПК».")
         note = simpledialog.askstring("Опубликовать обновление",
                                       "Что изменилось? (коротко, для истории)", parent=self)
         if note is None:
@@ -212,7 +277,7 @@ class Panel(tk.Tk):
                 import sync
                 v = asyncio.run(sync.publish(note))
                 self.after(0, lambda: messagebox.showinfo(
-                    NAME, f"✅ Обновление {v} опубликовано.\nВторой ПК поставит его сам в течение минуты."))
+                    NAME, f"✅ Обновление {v} опубликовано.\nОстальные ПК поставят его сами в течение минуты."))
             except Exception as e:
                 err = str(e)
                 self.after(0, lambda: messagebox.showerror(NAME, f"Не получилось: {err}"))

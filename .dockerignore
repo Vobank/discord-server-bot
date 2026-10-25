@@ -1,0 +1,9 @@
+.venv
+.git
+runtime
+__pycache__
+*.pyc
+bot.db*
+bot.log
+docs
+tools/legacy

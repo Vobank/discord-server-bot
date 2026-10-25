@@ -1,0 +1,12 @@
+# Запуск:  docker compose up -d --build      Лог:  docker compose logs -f      Стоп:  docker compose down
+# Перед запуском в папке должен лежать .env с ключом бота (Мастер настройки → «Несколько ПК» →
+# архив для хостинга — там уже всё есть).
+services:
+  bot:
+    build: .
+    container_name: discord-bot
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+    environment:
+      - HOST_KIND=server

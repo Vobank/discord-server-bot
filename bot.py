@@ -109,6 +109,9 @@ class Bot(commands.Bot):
             os.makedirs("runtime", exist_ok=True)
             with open(os.path.join("runtime", "bot_alive.txt"), "w") as f:
                 f.write(str(time.time()))
+            # бот в голосовом (играет музыка) — диспетчер не будет переносить его на другой ПК
+            with open(os.path.join("runtime", "bot_busy.txt"), "w") as f:
+                f.write("1" if any(vc.is_connected() for vc in self.voice_clients) else "0")
 
     async def report_error(self, where: str, error: BaseException):
         """Короткий отчёт об ошибке в #📋・логи (одна и та же ошибка — не чаще раза в 10 минут)."""

@@ -176,6 +176,8 @@
     "digest_hour": 20
   },
 
+  "multi_pc": {"balance": true},
+
   "birthday_hour": 10,
   "limited_bot_roles": [],
   "shop_roles": [],
