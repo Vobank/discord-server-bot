@@ -244,13 +244,29 @@ def write_ico(path: str):
 
 
 def dark_title_bar(window: tk.Misc, dark: bool):
-    """Тёмная или светлая полоса заголовка окна Windows под тему."""
+    """Полоса заголовка окна в цвет программы (Windows 11), на Windows 10 — хотя бы тёмная/светлая."""
     try:
-        hwnd = ctypes.windll.user32.GetParent(window.winfo_id())
-        value = ctypes.c_int(1 if dark else 0)
+        window.update_idletasks()
+        hwnd = int(window.wm_frame(), 16)
+        dwm = ctypes.windll.dwmapi
+
+        def set_attr(attr, value):
+            v = ctypes.c_int(value)
+            return dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(v), ctypes.sizeof(v)) == 0
+
         for attr in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (новые и старые сборки Windows 10)
-            if ctypes.windll.dwmapi.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value), ctypes.sizeof(value)) == 0:
+            if set_attr(attr, 1 if dark else 0):
                 break
+
+        def colorref(hex_color):
+            h = hex_color.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            return r | (g << 8) | (b << 16)
+        set_attr(35, colorref(C("nav")))     # DWMWA_CAPTION_COLOR — фон заголовка как у программы
+        set_attr(36, colorref(C("text")))    # DWMWA_TEXT_COLOR
+        set_attr(34, colorref(C("nav")))     # DWMWA_BORDER_COLOR — без светлой рамки
+        # перерисовать рамку окна сразу, а не после переключения фокуса
+        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020)
     except Exception:
         pass
 

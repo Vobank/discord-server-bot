@@ -102,8 +102,7 @@ class Scroll(tk.Frame):
         self.max_width, self.pad_x = px(max_width), px(pad_x)
         self.body.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.bind("<Configure>", self._on_resize)
-        self.canvas.bind("<Enter>", lambda e: self.canvas.bind_all("<MouseWheel>", self._wheel))
-        self.canvas.bind("<Leave>", lambda e: self.canvas.unbind_all("<MouseWheel>"))
+        # колесо мыши обрабатывает окно программы (App._on_wheel) и передаёт сюда — см. _wheel
 
     def _on_resize(self, e):
         width = min(e.width - 2 * self.pad_x, self.max_width)

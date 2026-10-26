@@ -74,6 +74,7 @@ class App(tk.Tk):
         self._set_icon()
         self._geometry()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+        self.bind_all("<MouseWheel>", self._on_wheel)
         self.bind_all("<Control-s>", lambda e: self.save())
         self.bind_all("<Control-S>", lambda e: self.save())
         self.report_callback_exception = self._on_error
@@ -82,6 +83,7 @@ class App(tk.Tk):
         self.update_title()
         self.deiconify()
         theme.dark_title_bar(self, self.mode == "dark")
+        self.after(150, lambda: theme.dark_title_bar(self, self.mode == "dark"))
         self.after(2000, self.poll_status)
         self.after(60, self._pump_background)
         if state.SANDBOX and not os.getenv("MANAGER_QUIET"):  # MANAGER_QUIET — для снимков в инструкцию
@@ -119,6 +121,16 @@ class App(tk.Tk):
         self.title(f"{self.bot_name()} — панель управления")
         if hasattr(self, "nav_name"):
             self.nav_name.configure(text=self.bot_name())
+
+    def _on_wheel(self, e):
+        """Колесо мыши прокручивает открытый раздел, где бы ни был указатель внутри него."""
+        page = self.pages.get(self.current)
+        scroller = getattr(page, "scroller", None)
+        if scroller is None or not isinstance(e.widget, tk.Misc):
+            return
+        if e.widget.winfo_toplevel() is not self or not str(e.widget).startswith(str(page)):
+            return
+        scroller._wheel(e)
 
     # ---------- каркас ----------
     def build_shell(self):
