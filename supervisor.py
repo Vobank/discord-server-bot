@@ -609,7 +609,7 @@ def single_instance():
 
 if __name__ == "__main__":
     if not sync.TOKEN:
-        log("нет DISCORD_TOKEN в .env — открой Мастер настройки (configure.pyw) или впиши ключ в .env")
+        log("нет DISCORD_TOKEN в .env — откройте панель управления (Запуск.bat) или впишите ключ в .env")
         sys.exit(EXIT_STOP)
     lock = single_instance()
     sv = Supervisor()

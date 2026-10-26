@@ -66,14 +66,19 @@ $ready = (Test-Path $envFile) -and ((Get-Content $envFile -Raw) -match '(?m)^DIS
 Step "4/5 Ярлыки на рабочем столе"
 $sh = New-Object -ComObject WScript.Shell
 $desk = [Environment]::GetFolderPath('Desktop')
-foreach ($s in @(@($name, 'control_panel.pyw', 'Панель управления'), @("$name — настройка", 'configure.pyw', 'Мастер настройки'))) {
-    $l = $sh.CreateShortcut((Join-Path $desk ($s[0] + '.lnk')))
-    $l.TargetPath = $vpyw
-    $l.Arguments = '"' + (Join-Path $dst $s[1]) + '"'
-    $l.WorkingDirectory = $dst
-    $l.Description = $s[2]
-    $l.Save()
+# старые ярлыки панели и мастера настройки (прошлые версии) — убираем, теперь всё в одной программе
+Get-ChildItem $desk -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
+    $a = $sh.CreateShortcut($_.FullName).Arguments
+    if ($a -like ('*' + (Join-Path $dst 'control_panel.pyw') + '*') -or $a -like ('*' + (Join-Path $dst 'configure.pyw') + '*')) { Remove-Item $_.FullName }
 }
+$l = $sh.CreateShortcut((Join-Path $desk ($name + '.lnk')))
+$l.TargetPath = $vpyw
+$l.Arguments = '"' + (Join-Path $dst 'manager.pyw') + '"'
+$l.WorkingDirectory = $dst
+$l.Description = 'Панель управления ботом'
+$ico = Join-Path $dst 'assets\icon.ico'
+if (Test-Path $ico) { $l.IconLocation = $ico }
+$l.Save()
 
 if ($ready) {
     Step "5/5 Включаю автозапуск и запускаю"
@@ -91,21 +96,21 @@ if ($ready) {
     }
     Start-Process wscript.exe -ArgumentList ('"' + $vbs + '"')
     Start-Sleep 3
-    Start-Process $vpyw -ArgumentList ('"' + (Join-Path $dst 'control_panel.pyw') + '"') -WorkingDirectory $dst
+    Start-Process $vpyw -ArgumentList ('"' + (Join-Path $dst 'manager.pyw') + '"') -WorkingDirectory $dst
     Write-Host ""
     Write-Host "=============================================" -ForegroundColor Green
-    Write-Host "   ГОТОВО! Бот установлен и будет сам включаться вместе с ПК." -ForegroundColor Green
-    Write-Host "   На рабочем столе ярлык «$name» — там видно, работает ли бот." -ForegroundColor Green
+    Write-Host "   Готово. Бот установлен и будет сам включаться вместе с ПК." -ForegroundColor Green
+    Write-Host "   Ярлык «$name» на рабочем столе открывает панель управления." -ForegroundColor Green
     Write-Host "   Папку с установщиком (архив) теперь можно удалить." -ForegroundColor Green
     Write-Host "=============================================" -ForegroundColor Green
 } else {
-    Step "5/5 Открываю Мастер настройки"
-    Start-Process $vpyw -ArgumentList ('"' + (Join-Path $dst 'configure.pyw') + '"') -WorkingDirectory $dst
+    Step "5/5 Открываю панель управления"
+    Start-Process $vpyw -ArgumentList ('"' + (Join-Path $dst 'manager.pyw') + '" --page connection') -WorkingDirectory $dst
     Write-Host ""
     Write-Host "=============================================" -ForegroundColor Green
-    Write-Host "   ГОТОВО! Программы установлены." -ForegroundColor Green
-    Write-Host "   Открылся Мастер настройки — пройди вкладки слева направо," -ForegroundColor Green
-    Write-Host "   потом «Построить сервер» и «Запустить бота»." -ForegroundColor Green
+    Write-Host "   Готово. Программы установлены." -ForegroundColor Green
+    Write-Host "   Открылась панель управления: укажите ключ бота в разделе «Подключение»," -ForegroundColor Green
+    Write-Host "   затем «Обзор» подскажет следующие шаги." -ForegroundColor Green
     Write-Host "   Бот лежит в папке $dst" -ForegroundColor Green
     Write-Host "=============================================" -ForegroundColor Green
 }

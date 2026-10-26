@@ -10,10 +10,25 @@ APP = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.environ["BOT_HELPER"] = "1"  # не дублировать события основного бота
 os.chdir(APP)
 sys.path.insert(0, APP)
+import re  # noqa: E402
+
 import discord  # noqa: E402
 
 import bot as botmod  # noqa: E402
 import utils  # noqa: E402
+
+EMOJI = re.compile("[\U0001F000-\U0001FAFF\u2600-\u27BF\uFE0F\u200D\u2B50\u2B06\u2934\u2935\u3030\u303D]+")
+
+
+def clean(text: str) -> str:
+    """Строки отчёта /setup для панели управления — без эмодзи-значка в начале (в названиях ролей эмодзи остаются)."""
+    out = text.lstrip()
+    while True:
+        m = EMOJI.match(out)
+        if not m:
+            break
+        out = out[m.end():].lstrip()
+    return out
 
 
 class SetupBot(botmod.Bot):
@@ -22,39 +37,39 @@ class SetupBot(botmod.Bot):
         try:
             g = self.get_guild(botmod.GUILD_ID)
             if g is None:
-                print("❌ Бот не видит сервер с GUILD_ID из .env — пригласи бота на сервер (Мастер → Подключение)")
+                print("Бот не видит выбранный сервер. Пригласите бота на сервер: панель управления → «Подключение».")
                 code = 1
             elif "--check" in sys.argv:
                 from cogs.setup_server import missing_items
                 items = missing_items(g)
                 print(f"Сервер: {g.name}\n")
-                print("✅ Всё уже на месте — бот только обновит панели." if not items else
-                      "Бот создаст:\n" + "\n".join(f"  • {i}" for i in items))
+                print("Всё уже на месте. Бот только обновит панели." if not items else
+                      "Бот создаст:\n" + "\n".join(f"  • {clean(i)}" for i in items))
                 if not g.me.guild_permissions.administrator:
-                    print("\n⚠️ У бота нет права «Администратор» — пригласи его заново по кнопке в Мастере.")
+                    print("\nУ бота нет права «Администратор». Пригласите его заново: «Подключение» → «Пригласить».")
             elif "--rules-only" in sys.argv:
                 from cogs.rules import post_rules
                 ch = utils.rules_channel(g)
                 if ch is None:
-                    print("❌ Канала правил нет — сначала «Построить сервер»")
+                    print("Канала правил пока нет. Сначала постройте сервер.")
                     code = 1
                 else:
                     await post_rules(self, ch)
-                    print(f"✅ Правила опубликованы в #{ch.name}")
+                    print(f"Правила опубликованы в канале #{ch.name}.")
             else:
                 if not g.me.guild_permissions.administrator:
-                    print("❌ У бота нет права «Администратор» — пригласи его заново по кнопке в Мастере.")
+                    print("У бота нет права «Администратор». Пригласите его заново: «Подключение» → «Пригласить».")
                     code = 1
                 else:
                     from cogs.setup_server import build_server
                     print(f"Сервер: {g.name}\n")
                     for line in await build_server(self, g):
-                        print("  ✅", line, flush=True)
+                        print("  •", clean(line), flush=True)
                     if "--rules" in sys.argv:
                         from cogs.rules import post_rules
                         if ch := utils.rules_channel(g):
                             await post_rules(self, ch)
-                            print("  ✅ правила опубликованы", flush=True)
+                            print("  • Правила опубликованы", flush=True)
         except Exception:
             import traceback
             traceback.print_exc()

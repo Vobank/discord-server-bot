@@ -33,7 +33,7 @@ class SyncSetup(botmod.Bot):
         code = 0
         try:
             if os.getenv("SYNC_HEARTBEAT_ID"):  # новый пульс отрезал бы второй ПК со старым
-                print("✅ Синхронизация уже включена — ничего не меняю.")
+                print("Синхронизация уже включена, ничего менять не нужно.")
                 sys.stdout.flush()
                 os._exit(0)
             g = self.get_guild(botmod.GUILD_ID)
@@ -52,8 +52,8 @@ class SyncSetup(botmod.Bot):
             await hb.pin()
             set_env("SYNC_CHANNEL_ID", str(ch.id))
             set_env("SYNC_HEARTBEAT_ID", str(hb.id))
-            print(f"✅ Канал #{ch.name} создан, пульс записан в .env.")
-            print("Теперь перезапусти бота и собери установщик для второго ПК.")
+            print(f"Служебный канал #{ch.name} готов, его данные записаны в .env.")
+            print("Перезапустите бота, затем соберите установщик для другого компьютера.")
         except Exception:
             import traceback
             traceback.print_exc()
