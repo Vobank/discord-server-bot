@@ -345,6 +345,9 @@ class Supervisor:
                 await self.upload_db(d, force=True)
             elif what == "unpin":
                 self.pinned = False
+            elif what == "bot_task" and c.get("task"):  # разовое задание боту, он заберёт его за 30 с
+                with open(os.path.join(sync.RUNTIME, "bot_task.txt"), "w", encoding="utf-8") as f:
+                    f.write(str(c["task"]))
             elif what == "move" and c.get("to") and c["to"] != self.me["id"]:
                 log(f"передаю бота ПК «{c.get('by')}» по его просьбе (закреплено за ним)")
                 await self.release(d, c["to"], pin=True)

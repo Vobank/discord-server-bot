@@ -96,7 +96,8 @@ async def init(path: str = "bot.db"):
     if "genre" not in cols:
         await _conn.execute("ALTER TABLE films ADD COLUMN genre TEXT DEFAULT 'other'")
     for col, kind in (("genres", "TEXT"), ("year", "TEXT"), ("country", "TEXT"), ("duration", "TEXT"),
-                      ("description", "TEXT"), ("poster", "BLOB"), ("card_msg", "INTEGER"), ("author_id", "INTEGER")):
+                      ("description", "TEXT"), ("poster", "BLOB"), ("card_msg", "INTEGER"), ("author_id", "INTEGER"),
+                      ("episodes_total", "INTEGER"), ("episodes_watched", "INTEGER DEFAULT 0")):
         if col not in cols:  # карточки фильмов
             await _conn.execute(f"ALTER TABLE films ADD COLUMN {col} {kind}")
     cols = [r[1] for r in await (await _conn.execute("PRAGMA table_info(cinema_sessions)")).fetchall()]

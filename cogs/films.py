@@ -4,7 +4,8 @@
 «👍 Тоже хочу» добавляет голос (×N). Админ в #🎬・кино-настройки устраивает голосование и отмечает
 просмотренное; начался сеанс с таким названием — фильм сам уходит в «Уже посмотрели».
 ИИ (ai.py) сам дозаполняет новые карточки: год, страну, длительность, описание и обложку.
-Ответы бота на кнопки видит только нажавший, и они исчезают сами."""
+Ответы бота на кнопки видит только нажавший, и они исчезают сами.
+Сериалы, мультсериалы и аниме: бот помнит, сколько серий посмотрели и сколько осталось (кнопки на карточке)."""
 import asyncio
 import datetime
 import io
@@ -44,7 +45,8 @@ POPULAR_TOP = 5
 GONE = 15        # через сколько секунд исчезают ответы бота
 MENU_GONE = 180  # меню и списки — дольше, чтобы успеть выбрать
 FIELDS = "id, title, count, suggested_by, watched_before, watched_at, genre, genres, year, country, duration, " \
-         "description, poster, card_msg, author_id, status"
+         "description, poster, card_msg, author_id, status, episodes_total, episodes_watched"
+SERIALS = {"series", "cartoon_series", "anime"}  # у них считаем серии
 
 
 def genre_label(key: str) -> str:
@@ -82,6 +84,18 @@ async def film_by(**where) -> dict | None:
 
 
 # ---------- карточка ----------
+def is_serial(f: dict) -> bool:
+    return genre_keys(f)[0] in SERIALS or bool(f.get("episodes_total"))
+
+
+def progress(f: dict) -> str:
+    """«12 из 114 · осталось 102» или «посмотрели 12» (если не знаем, сколько всего)."""
+    seen, total = f.get("episodes_watched") or 0, f.get("episodes_total")
+    if total:
+        return f"{seen} из {total} · осталось {max(0, total - seen)}"
+    return f"посмотрели {seen}" + (" · сколько всего — неизвестно" if seen else "")
+
+
 def meta_line(f: dict) -> str:
     return " · ".join(x for x in (f.get("year"), f.get("country"), f.get("duration")) if x)
 
@@ -97,6 +111,8 @@ def card_embed(f: dict) -> discord.Embed:
         e.add_field(name="🌍 Страна", value=f["country"])
     if f.get("duration"):
         e.add_field(name="⏱️ Время", value=f["duration"])
+    if is_serial(f):
+        e.add_field(name="📺 Серии", value=progress(f), inline=False)
     e.set_image(url="attachment://film.png")
     who = f"<@{f['author_id']}>" if f.get("author_id") else "—"
     status = "✅ Уже посмотрели" if watched else f"👍 Хотят посмотреть: {f['count']}"
@@ -108,6 +124,9 @@ def card_embed(f: dict) -> discord.Embed:
 async def card_file(f: dict) -> discord.File:
     watched = f["status"] == "watched"
     badge = "ПОСМОТРЕЛИ" if watched else (f"ХОТЯТ ПОСМОТРЕТЬ ×{f['count']}" if f["count"] > 1 else "В ПОДБОРКЕ")
+    if not watched and is_serial(f) and f.get("episodes_watched"):
+        total = f.get("episodes_total")
+        badge = f"СЕРИЯ {f['episodes_watched']} ИЗ {total}" if total else f"ПОСМОТРЕЛИ {f['episodes_watched']} СЕРИЙ"
     data = await asyncio.to_thread(film_card.render, f["title"], [GENRES[k][1] for k in genre_keys(f)],
                                    meta_line(f), badge, f["poster"], watched)
     return discord.File(io.BytesIO(data), filename="film.png")
@@ -129,7 +148,7 @@ async def update_card(guild: discord.Guild, film_id: int, new: bool = False):
     channel = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_WISHLIST)
     if not f or not channel or f["status"] == "planned":  # planned — фильм сеанса, без карточки в подборке
         return
-    view = None if f["status"] == "watched" else FilmCardView()
+    view = None if f["status"] == "watched" else FilmCardView(serial=is_serial(f))
     if f["card_msg"] and not new:
         try:
             msg = await channel.fetch_message(f["card_msg"])
@@ -163,7 +182,7 @@ async def done(interaction: discord.Interaction, text: str, after: int = GONE):
 
 # ---------- ИИ: дозаполнить карточку ----------
 FIELD_NAMES = {"year": "год", "country": "страну", "duration": "длительность", "description": "описание",
-               "poster": "обложку"}
+               "episodes_total": "число серий", "poster": "обложку"}
 
 
 async def autofill(guild: discord.Guild, fid: int, overwrite: bool = False) -> str:
@@ -185,6 +204,8 @@ async def autofill(guild: discord.Guild, fid: int, overwrite: bool = False) -> s
         value = (info.get(k) or "").strip()[:limit]
         if value and (overwrite or not f[k]):
             updates[k] = value
+    if info.get("episodes") and (overwrite or not f["episodes_total"]):
+        updates["episodes_total"] = info["episodes"]
     if not f["poster"]:
         data = await ai.poster(f["title"], info)
         if data:
@@ -406,11 +427,75 @@ class EditMenu(discord.ui.View):
         await done(interaction, "✅ Тип обновлён")
 
 
-class FilmCardView(discord.ui.View):
-    """Кнопки под каждой карточкой (постоянные — фильм ищется по сообщению)."""
+class EpisodesModal(discord.ui.Modal, title="📺 Сколько серий посмотрели"):
+    def __init__(self, f: dict):
+        super().__init__()
+        self.fid = f["id"]
+        self.seen = discord.ui.TextInput(label="Сколько серий уже посмотрели", max_length=5,
+                                         default=str(f.get("episodes_watched") or 0))
+        self.total = discord.ui.TextInput(label="Сколько всего серий (если знаешь)", required=False, max_length=5,
+                                          default=str(f["episodes_total"]) if f.get("episodes_total") else "")
+        self.add_item(self.seen)
+        self.add_item(self.total)
 
-    def __init__(self):
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            seen = max(0, int(self.seen.value.strip()))
+            total = int(self.total.value.strip()) if self.total.value.strip() else None
+        except ValueError:
+            return await interaction.response.send_message("⚠️ Нужны числа, например 12 и 114", ephemeral=True,
+                                                           delete_after=GONE)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await done(interaction, await set_episodes(interaction.guild, self.fid, seen, total))
+
+
+async def set_episodes(guild: discord.Guild, fid: int, seen: int, total: int | None) -> str:
+    """Запомнить, сколько серий посмотрели. Досмотрели все — сериал уходит в «Уже посмотрели»."""
+    if total:
+        seen = min(seen, total)
+    await db.execute("UPDATE films SET episodes_watched=?, episodes_total=? WHERE id=?", (seen, total, fid))
+    finished = bool(total) and seen >= total
+    if finished:
+        await db.execute("UPDATE films SET status='watched', watched_at=? WHERE id=?", (int(time.time()), fid))
+    await update_card(guild, fid)
+    f = await film_by(id=fid)
+    return f"✅ **{f['title']}** досмотрели целиком!" if finished else f"📺 **{f['title']}**: {progress(f)}"
+
+
+class FilmCardView(discord.ui.View):
+    """Кнопки под каждой карточкой (постоянные — фильм ищется по сообщению). У сериалов — ещё учёт серий."""
+
+    def __init__(self, serial: bool = True):
         super().__init__(timeout=None)
+        if not serial:
+            self.remove_item(self.episode_plus)
+            self.remove_item(self.episodes)
+
+    @staticmethod
+    async def editable(interaction: discord.Interaction) -> dict | None:
+        f = await film_by(card_msg=interaction.message.id)
+        if not f:
+            await interaction.response.send_message("Фильм не найден", ephemeral=True, delete_after=GONE)
+            return None
+        if not can_edit(interaction.user, f):
+            await interaction.response.send_message(
+                f"📺 Отмечать серии могут автор, Администрация и роль {config.ROLE_CINEMA} "
+                "(её можно взять кнопкой «🔔 Уведомлять меня» в 🎬・афиша).", ephemeral=True, delete_after=30)
+            return None
+        return f
+
+    @discord.ui.button(label="+1 серия", emoji="▶️", style=discord.ButtonStyle.primary, custom_id="film:ep_plus", row=1)
+    async def episode_plus(self, interaction: discord.Interaction, _):
+        if not (f := await self.editable(interaction)):
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await done(interaction, await set_episodes(interaction.guild, f["id"], (f["episodes_watched"] or 0) + 1,
+                                                   f["episodes_total"]))
+
+    @discord.ui.button(label="Серии", emoji="📺", custom_id="film:episodes", row=1)
+    async def episodes(self, interaction: discord.Interaction, _):
+        if f := await self.editable(interaction):
+            await interaction.response.send_modal(EpisodesModal(f))
 
     @discord.ui.button(label="Тоже хочу", emoji="👍", style=discord.ButtonStyle.success, custom_id="film:want")
     async def want(self, interaction: discord.Interaction, _):
@@ -551,7 +636,11 @@ async def mark_watched(guild_id: int, title: str) -> bool:
 
 
 async def watched_now(guild: discord.Guild, title: str):
-    """Для кинотеатра: сеанс начался — отметить и перекрасить карточку."""
+    """Для кинотеатра: сеанс начался — отметить и перекрасить карточку. Сериал за один сеанс не досматривают —
+    его не отмечаем, серии считают кнопками на карточке."""
+    row = await db.fetchone(f"SELECT {FIELDS} FROM films WHERE guild_id=? AND norm=?", (guild.id, normalize(title)))
+    if row and is_serial(as_dict(row)):
+        return
     await mark_watched(guild.id, title)
     row = await db.fetchone("SELECT id FROM films WHERE guild_id=? AND norm=?", (guild.id, normalize(title)))
     if row:

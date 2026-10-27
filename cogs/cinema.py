@@ -411,18 +411,67 @@ class CinemaPanelView(discord.ui.View):
         from cogs.films import open_manage
         await open_manage(interaction, "delete")
 
+    @discord.ui.button(label="Начать заново", emoji="🧹", style=discord.ButtonStyle.danger, custom_id="cin:fresh", row=2)
+    async def fresh(self, interaction, _):
+        await interaction.response.send_message(
+            "🧹 **Начать заново?** Удалю все сообщения в 🎬・афиша и 🍿・подборка и весь список фильмов "
+            "(и «Уже посмотрели»). Сеансы в расписании останутся. Вернуть будет нельзя.",
+            view=FreshStartConfirm(), ephemeral=True, delete_after=120)
+
+
+class FreshStartConfirm(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+
+    @discord.ui.button(label="Да, удалить всё", emoji="🧹", style=discord.ButtonStyle.danger)
+    async def yes(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="🧹 Удаляю… это займёт до минуты.", view=None)
+        await fresh_start(interaction.client, interaction.guild)
+        await interaction.edit_original_response(content="✅ Готово: афиша и подборка чистые, панели на месте.")
+
+
+async def fresh_start(bot: commands.Bot, guild: discord.Guild):
+    """Начать кино заново: всё из афиши и подборки — удалить, список фильмов — очистить, панели — выложить снова."""
+    from cogs import films
+    afisha = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_AFISHA)
+    wishlist = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_WISHLIST)
+    setup_ch = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_SETUP)
+    for ch in (afisha, wishlist):
+        if ch:
+            await ch.purge(limit=None, reason="Кино: начать заново")
+    await db.execute("DELETE FROM films WHERE guild_id=?", (guild.id,))
+    if afisha and setup_ch:
+        await post_cinema_panels(bot, afisha, setup_ch)
+    if wishlist:
+        await films.post_panel(bot, wishlist)
+    log.info("Кино начато заново на сервере %s", guild.name)
+
+
+def afisha_view(guild: discord.Guild) -> discord.ui.View:
+    """Кнопки афиши + ссылка в подборку, где предлагают фильмы."""
+    view = AfishaView()
+    wishlist = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_WISHLIST)
+    if wishlist:
+        view.add_item(discord.ui.Button(label="Предложить фильм", emoji="➕", url=wishlist.jump_url))
+    return view
+
 
 async def post_cinema_panels(bot: commands.Bot, afisha: discord.TextChannel, setup_ch: discord.TextChannel):
     for ch in (afisha, setup_ch):
         async for msg in ch.history(limit=30):
             if msg.author == bot.user and msg.components:
                 await msg.delete()
+    wishlist = discord.utils.get(afisha.guild.text_channels, name=config.CH_CINEMA_WISHLIST)
+    where = wishlist.mention if wishlist else "🍿・подборка"
     await afisha.send(embed=discord.Embed(
         title=f"🎬 Кинотеатр {config.SERVER_NAME}",
         description="Смотрим фильмы вместе в 🎬・Кинозал!\n\nАнонсы и напоминания появляются здесь.\n"
                     "🔔 **Уведомлять меня** — пинговать тебя перед каждым сеансом\n📅 **Расписание** — ближайшие сеансы\n"
-                    "🍿 **Подборка** — фильмы, которые предложили посмотреть (предложить — в 🍿・подборка)",
-        colour=COLOUR), view=AfishaView())
+                    "🍿 **Подборка** — фильмы, которые предложили посмотреть\n\n"
+                    f"**➕ Как предложить фильм:** открой {where} (кнопка «Предложить фильм» ниже), нажми "
+                    "**➕ Предложить фильм**, выбери, что это (фильм, сериал, аниме…), и напиши название. "
+                    "Год, описание и обложку бот допишет сам.",
+        colour=COLOUR), view=afisha_view(afisha.guild))
     await setup_ch.send(embed=discord.Embed(
         title="⚙️ Настройка кинотеатра",
         description="➕ **Добавить сеанс** — фильм, дата, время, ссылка (создаст событие в «Мероприятиях»)\n"
@@ -437,9 +486,9 @@ async def post_cinema_panels(bot: commands.Bot, afisha: discord.TextChannel, set
                     "✅ **Просмотрено** — убрать фильм из подборки в «Уже посмотрели» "
                     "(при старте сеанса с таким же названием бот делает это сам)\n"
                     "🗑️ **Удалить из подборки** — мусор и шутки\n\n"
-                    "ℹ️ Бот не может сам показывать видео (это ограничение Discord). На старте он запускает "
-                    "«Смотрим вместе» (YouTube прямо в Discord) и даёт ссылку; для других платформ ведущий "
-                    "включает демонстрацию экрана в кинозале.",
+                    "🧹 **Начать заново** — очистить афишу, подборку и список фильмов\n\n"
+                    "ℹ️ На старте сеанса: ссылка на видеофайл или Яндекс Диск — кнопка «🌐 Смотреть в браузере» "
+                    "(все смотрят синхронно), YouTube — «Смотрим вместе» прямо в Discord.",
         colour=COLOUR), view=CinemaPanelView())
 
 
@@ -453,8 +502,21 @@ class Cinema(commands.Cog):
     def cog_unload(self):
         self.ticker.cancel()
 
+    async def remote_task(self):
+        """Задание с другого ПК (через диспетчер, команда bot_task): runtime/bot_task.txt."""
+        path = os.path.join("runtime", "bot_task.txt")
+        if not os.path.exists(path):
+            return
+        with open(path, encoding="utf-8") as f:
+            task = f.read().strip()
+        os.remove(path)
+        if task == "cinema_fresh_start":
+            for guild in self.bot.guilds:
+                await fresh_start(self.bot, guild)
+
     @tasks.loop(seconds=30)
     async def ticker(self):
+        await self.remote_task()
         now = datetime.datetime.now(config.TIMEZONE)
         for guild in self.bot.guilds:
             afisha, voice, role = channels(guild)
@@ -469,7 +531,7 @@ class Cinema(commands.Cog):
                 if not s["morning_sent"] and now < start and now >= announce_time(s, slots):
                     embed = discord.Embed(description=await render(guild, "cinema_text_morning", s), colour=COLOUR)
                     files = await with_card(guild, s, embed, f"СЕГОДНЯ В {start:%H:%M}")
-                    await afisha.send(embed=embed, files=files, view=AfishaView())
+                    await afisha.send(embed=embed, files=files, view=afisha_view(guild))
                     await db.execute("UPDATE cinema_sessions SET morning_sent=1 WHERE id=?", (s["id"],))
 
                 sent = set(filter(None, s["reminders_sent"].split(",")))

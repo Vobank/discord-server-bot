@@ -78,21 +78,67 @@ async def guess_song(description: str) -> str | None:
 
 
 # ---------- фильмы ----------
+# что искать в Википедии для каждого типа (так статья находится точнее)
+WIKI_KIND = {"фильм": "фильм", "сериал": "телесериал", "мультфильм": "мультфильм", "мультсериал": "мультсериал",
+             "аниме": "аниме", "аниме-фильм": "аниме фильм"}
+
+
+async def _wiki_get(lang: str, params: dict) -> dict:
+    async with aiohttp.ClientSession(headers=WIKI_UA) as http:
+        async with http.get(f"https://{lang}.wikipedia.org/w/api.php", params={**params, "format": "json"},
+                            timeout=aiohttp.ClientTimeout(total=20)) as r:
+            return await r.json()
+
+
+async def wiki_article(title: str, kind: str) -> tuple[str, str]:
+    """Статья русской Википедии о фильме: (название статьи, начало в вики-разметке — карточка и вступление).
+    Википедия свежее знаний ИИ: там есть число сезонов и серий, годы показа."""
+    def norm(s: str) -> str:
+        return re.sub(r"[^\w]+", " ", s.lower().replace("ё", "е")).strip()
+
+    try:
+        found = await _wiki_get("ru", {"action": "query", "list": "search", "srlimit": "5",
+                                       "srsearch": f"{title} {WIKI_KIND.get(kind, kind)}"})
+        # подходит только статья, название которой совпадает с фильмом: «Слово пацана», а не «Пацаны»
+        hits = [h["title"] for h in found.get("query", {}).get("search", [])
+                if "значения" not in h["title"] and norm(h["title"].split(" (")[0]).startswith(norm(title))]
+        for name in hits[:2]:
+            page = await _wiki_get("ru", {"action": "parse", "page": name, "prop": "wikitext",
+                                          "section": "0", "redirects": "1"})
+            text = page.get("parse", {}).get("wikitext", {}).get("*", "")
+            if text:
+                return page["parse"]["title"], text[:9000]
+    except (aiohttp.ClientError, TimeoutError, ValueError, KeyError):
+        pass
+    return "", ""
+
+
 async def film_info(title: str, kind: str = "фильм") -> dict:
-    """Год, страна, длительность, описание и названия статей в Википедии. found=False — не нашёлся."""
+    """Год, страна, длительность, число серий, описание. Сначала берём из Википедии, нет статьи — из знаний ИИ.
+    found=False — не нашёлся."""
+    article, text = await wiki_article(title, kind)
+    source = (f"Вот начало статьи «{article}» из русской Википедии (вики-разметка):\n<<<\n{text}\n>>>\n"
+              "Бери данные из статьи — она свежее твоих знаний. Если статья не про этот "
+              f"{kind}, ответь found=false.\n\n") if text else ""
     data = await ask_json(
-        f"Найди {kind} «{title[:100]}». Верни JSON:\n"
+        f"{source}Нужны данные: {kind} «{title[:100]}». Верни JSON:\n"
         '{"found": true или false — нашёлся ли именно такой,\n'
         ' "title": официальное название на русском (если его нет — оригинальное),\n'
-        ' "year": год выхода (у сериала — годы, например «2019–2022»),\n'
+        ' "year": год выхода; у сериала — годы показа, например «2019–2022», а если ещё выходит — «2020 — н. в.»,\n'
         ' "country": страны через запятую, по-русски,\n'
-        ' "duration": у фильма — «1 ч 33 мин», у сериала — сколько сезонов, например «3 сезона»,\n'
+        ' "duration": у фильма — «1 ч 33 мин», у сериала — сколько сезонов, например «5 сезонов»,\n'
+        ' "episodes": у сериала — сколько всего серий (число), у фильма — null,\n'
         ' "description": 2–3 предложения на русском, о чём это, без спойлеров,\n'
-        ' "wiki_ru": точное название статьи в русской Википедии или "",\n'
         ' "wiki_en": точное название статьи в английской Википедии или "",\n'
         ' "poster_prompt": по-английски: атмосферный постер к нему — сцена, настроение, цвета; '
-        "без текста, без надписей и без лиц реальных актёров}", search=True)
-    return {k: (str(v).strip() if v is not None and k != "found" else v) for k, v in data.items()}
+        "без текста, без надписей и без лиц реальных актёров}")
+    info = {k: (str(v).strip() if v is not None and k not in ("found", "episodes") else v) for k, v in data.items()}
+    info["wiki_ru"] = article
+    try:
+        info["episodes"] = int(info.get("episodes")) if info.get("episodes") else None
+    except (TypeError, ValueError):
+        info["episodes"] = None
+    return info
 
 
 async def wiki_image(article: str, lang: str) -> bytes | None:
