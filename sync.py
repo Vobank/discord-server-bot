@@ -174,17 +174,31 @@ def pack_code() -> tuple[bytes, str]:
     return data, hashlib.sha256(data).hexdigest()
 
 
-def apply_code(data: bytes):
-    """Распаковать обновление поверх папки, не трогая локальные файлы (.env, host.json, базу)."""
+def apply_code(data: bytes) -> list[str]:
+    """Распаковать обновление поверх папки, не трогая локальные файлы (.env, host.json, базу).
+    Неизменённые файлы не переписываем: открытая панель держит свои шрифты, и Windows не даёт их перезаписать.
+    Возвращает файлы, которые записать не удалось (заняты другой программой)."""
+    failed = []
     with zipfile.ZipFile(io.BytesIO(data)) as z:
         for info in z.infolist():
             parts = info.filename.replace("\\", "/").split("/")
             if parts[0] in LOCAL_DIRS or parts[-1] in LOCAL_FILES or ".." in parts:
                 continue
             target = os.path.join(APP, *parts)
+            new = z.read(info)
+            try:
+                with open(target, "rb") as f:
+                    if f.read() == new:
+                        continue
+            except OSError:
+                pass
             os.makedirs(os.path.dirname(target), exist_ok=True)
-            with z.open(info) as src, open(target, "wb") as dst:
-                dst.write(src.read())
+            try:
+                with open(target, "wb") as dst:
+                    dst.write(new)
+            except PermissionError:
+                failed.append(info.filename)
+    return failed
 
 
 async def publish(note: str = "") -> int:

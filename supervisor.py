@@ -279,7 +279,9 @@ class Supervisor:
         if was_active:
             self.stop_bot()
             await self.upload_db(d, force=True)
-        sync.apply_code(data)
+        failed = sync.apply_code(data)
+        if failed:
+            log("⚠ не удалось обновить (заняты другой программой): " + ", ".join(failed[:5]))
         sync.set_local_version(new["meta"]["version"])
         if open(req, "rb").read() != old_req:
             log("ставлю новые библиотеки…")
