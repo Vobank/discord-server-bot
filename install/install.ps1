@@ -83,18 +83,18 @@ $l.Save()
 if ($ready) {
     Step "5/5 Включаю автозапуск и запускаю"
     $startup = [Environment]::GetFolderPath('Startup')
+    # автозапуск через pythonw без окна; старый ярлык через VBScript убираем — VBScript есть не во всех Windows
+    $launcher = Join-Path $dst 'tools\autostart.pyw'
     $vbs = Join-Path $dst 'tools\run_hidden.vbs'
-    $have = $false
     Get-ChildItem $startup -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {
-        if ($sh.CreateShortcut($_.FullName).Arguments -like "*$vbs*") { $have = $true } }
-    if (-not $have) {
-        $l = $sh.CreateShortcut((Join-Path $startup "$name (автозапуск).lnk"))
-        $l.TargetPath = 'C:\Windows\System32\wscript.exe'
-        $l.Arguments = '"' + $vbs + '"'
-        $l.WorkingDirectory = $dst
-        $l.Save()
-    }
-    Start-Process wscript.exe -ArgumentList ('"' + $vbs + '"')
+        $a = $sh.CreateShortcut($_.FullName).Arguments
+        if ($a -like "*$vbs*" -or $a -like "*$launcher*") { Remove-Item $_.FullName } }
+    $l = $sh.CreateShortcut((Join-Path $startup "$name (автозапуск).lnk"))
+    $l.TargetPath = $vpyw
+    $l.Arguments = '"' + $launcher + '"'
+    $l.WorkingDirectory = $dst
+    $l.Save()
+    Start-Process $vpyw -ArgumentList ('"' + $launcher + '"') -WorkingDirectory $dst
     Start-Sleep 3
     Start-Process $vpyw -ArgumentList ('"' + (Join-Path $dst 'manager.pyw') + '"') -WorkingDirectory $dst
     Write-Host ""

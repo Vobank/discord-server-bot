@@ -106,7 +106,7 @@ def balance_enabled() -> bool:
 
 
 def restart_self():
-    """Перезапуск диспетчера с новым кодом. Windows: выходим, autostart.bat запустит заново.
+    """Перезапуск диспетчера с новым кодом. Windows: выходим, автозапуск (tools/autostart.pyw) запустит заново.
     Linux (VPS, Docker, панель хостинга): заменяем процесс сами — не всякий хостинг перезапускает упавшее."""
     if os.name == "nt":
         sys.exit(0)

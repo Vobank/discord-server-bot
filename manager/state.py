@@ -42,6 +42,7 @@ LOGS = {"bot": os.path.join(APP, "bot.log"), "supervisor": os.path.join(RUNTIME,
 
 PY = os.path.join(APP, ".venv", "Scripts", "python.exe")
 PYW = os.path.join(APP, ".venv", "Scripts", "pythonw.exe")
+LAUNCHER = os.path.join(APP, "tools", "autostart.pyw")  # держит диспетчер запущенным, без окна
 if not os.path.exists(PY):
     PY = sys.executable
     PYW = sys.executable.replace("python.exe", "pythonw.exe") if sys.executable.endswith("python.exe") else PY
@@ -294,9 +295,8 @@ def send_command(cmd: str):
 def start_supervisor():
     if SANDBOX:
         return sandbox_note("запуск диспетчера")
-    vbs = os.path.join(APP, "tools", "run_hidden.vbs")
     if os.name == "nt":
-        subprocess.Popen(["wscript.exe", vbs], cwd=APP)
+        subprocess.Popen([PYW, LAUNCHER], cwd=APP)
     else:
         subprocess.Popen([PY, "-X", "utf8", "supervisor.py"], cwd=APP, start_new_session=True)
 
@@ -379,9 +379,11 @@ def _q(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-VBS = os.path.join(APP, "tools", "run_hidden.vbs")
+VBS = os.path.join(APP, "tools", "run_hidden.vbs")  # старый автозапуск: ярлыки прошлых версий ещё могут вести сюда
 MANAGER = os.path.join(APP, "manager.pyw")
 ICON = os.path.join(APP, "assets", "icon.ico")
+# ярлык автозапуска — наш или прошлой версии (через VBScript)
+OUR_STARTUP = f"($a -like ('*' + {_q(LAUNCHER)} + '*') -or $a -like ('*' + {_q(VBS)} + '*'))"
 
 
 def autostart_enabled() -> bool:
@@ -389,25 +391,22 @@ def autostart_enabled() -> bool:
         return False
     out = _ps(f"""$sh = New-Object -ComObject WScript.Shell
 $n = 0; Get-ChildItem ([Environment]::GetFolderPath('Startup')) -Filter *.lnk -ErrorAction SilentlyContinue |
- ForEach-Object {{ if ($sh.CreateShortcut($_.FullName).Arguments -like ('*' + {_q(VBS)} + '*')) {{ $n++ }} }}; $n""")
+ ForEach-Object {{ $a = $sh.CreateShortcut($_.FullName).Arguments; if {OUR_STARTUP} {{ $n++ }} }}; $n""")
     return out.strip().isdigit() and int(out) > 0
 
 
 def set_autostart(on: bool, name: str):
     if SANDBOX:
         return sandbox_note(f"автозапуск: {on}")
-    if on:
-        _ps(f"""$sh = New-Object -ComObject WScript.Shell
-$have = $false; $startup = [Environment]::GetFolderPath('Startup')
+    # старые ярлыки убираем всегда: VBScript есть не во всех Windows
+    script = f"""$sh = New-Object -ComObject WScript.Shell; $startup = [Environment]::GetFolderPath('Startup')
 Get-ChildItem $startup -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {{
- if ($sh.CreateShortcut($_.FullName).Arguments -like ('*' + {_q(VBS)} + '*')) {{ $have = $true }} }}
-if (-not $have) {{ $l = $sh.CreateShortcut((Join-Path $startup ({_q(name)} + ' (автозапуск).lnk')))
- $l.TargetPath = 'C:\\Windows\\System32\\wscript.exe'; $l.Arguments = '"' + {_q(VBS)} + '"'
- $l.WorkingDirectory = {_q(APP)}; $l.Save() }}""")
-    else:
-        _ps(f"""$sh = New-Object -ComObject WScript.Shell
-Get-ChildItem ([Environment]::GetFolderPath('Startup')) -Filter *.lnk -ErrorAction SilentlyContinue | ForEach-Object {{
- if ($sh.CreateShortcut($_.FullName).Arguments -like ('*' + {_q(VBS)} + '*')) {{ Remove-Item $_.FullName }} }}""")
+ $a = $sh.CreateShortcut($_.FullName).Arguments; if {OUR_STARTUP} {{ Remove-Item $_.FullName }} }}"""
+    if on:
+        script += f"""
+$l = $sh.CreateShortcut((Join-Path $startup ({_q(name)} + ' (автозапуск).lnk')))
+$l.TargetPath = {_q(PYW)}; $l.Arguments = '"' + {_q(LAUNCHER)} + '"'; $l.WorkingDirectory = {_q(APP)}; $l.Save()"""
+    _ps(script)
 
 
 def ensure_shortcut(name: str):
