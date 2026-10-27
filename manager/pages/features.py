@@ -218,6 +218,12 @@ class View(Page):
                       "Выдаётся кнопкой «Уведомлять меня» в афише; бот упоминает её перед каждым сеансом.")
         self.bind_entry(row.right, "s:roles.cinema", 28).pack(side="left")
         self.cinema_row = exp.row("Сеансы и тексты анонсов", self._cinema_hint())
+        row = exp.row("Адрес кинозала",
+                      "Свой плеер внутри Discord: фильм по ссылке смотрят все в голосовом канале одновременно. "
+                      "Пусто — кинозал выключен. Как развернуть — cinema/README.md.")
+        self.bind_entry(row.right, "e:KINOZAL_URL", 34, placeholder="https://kinozal.….workers.dev").pack(side="left")
+        row = exp.row("Ключ кинозала", "Тот же секрет, что задан при развёртывании кинозала.")
+        self.bind_entry(row.right, "e:KINOZAL_SECRET", 34, secret=True).pack(side="left")
 
     def _cinema_hint(self) -> str:
         name = plain(self.get("s:cinema.setup", ""))

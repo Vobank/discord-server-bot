@@ -17,7 +17,7 @@ sys.path.insert(0, APP)
 import config  # noqa: E402
 import sync  # noqa: E402
 
-SKIP_DIRS = {".venv", "runtime", "__pycache__", ".git", "legacy", ".github", "docs"}
+SKIP_DIRS = {".venv", "runtime", "__pycache__", ".git", "legacy", ".github", "docs", "node_modules", ".wrangler"}
 SKIP_FILES = {"bot.db", "bot.log", "host.json", "bot.db-journal", "version.txt"}
 README_PC = """{bot} — установка на этот компьютер
 

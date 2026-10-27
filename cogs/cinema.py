@@ -4,9 +4,13 @@
 Настройка — кнопками в #🎬・кино-настройки (админка)."""
 import datetime
 import logging
+import os
 import re
 
+import aiohttp
+
 import discord
+from discord import app_commands
 from discord.ext import commands, tasks
 
 import config
@@ -14,6 +18,38 @@ import db
 import perms
 
 COLOUR = discord.Colour(0xE50914)
+# Свой кинозал (приложение внутри Discord, cinema/): адрес сайта и секрет, чтобы бот мог сообщать ему фильм
+KINOZAL_URL = (os.getenv("KINOZAL_URL") or "").rstrip("/")
+KINOZAL_SECRET = os.getenv("KINOZAL_SECRET") or ""
+YOUTUBE = re.compile(r"(youtube\.com|youtu\.be)/", re.I)
+
+
+def kinozal_ready() -> bool:
+    return bool(KINOZAL_URL and KINOZAL_SECRET)
+
+
+async def kinozal_set(voice: discord.VoiceChannel, url: str, title: str) -> bool:
+    """Сообщить кинозалу, какой фильм показывать в этом голосовом канале."""
+    try:
+        async with aiohttp.ClientSession() as http:
+            async with http.post(f"{KINOZAL_URL}/api/now?channel={voice.id}", json={"url": url, "title": title},
+                                 headers={"Authorization": f"Bearer {KINOZAL_SECRET}"},
+                                 timeout=aiohttp.ClientTimeout(total=15)) as r:
+                return r.status == 200
+    except Exception:
+        log.exception("Кинозал не ответил")
+        return False
+
+
+async def kinozal_invite(bot: commands.Bot, voice: discord.VoiceChannel) -> str | None:
+    """Ссылка, по которой кинозал открывается прямо в голосовом канале."""
+    try:
+        invite = await voice.create_invite(max_age=6 * 3600, target_type=discord.InviteTarget.embedded_application,
+                                           target_application_id=bot.application_id, reason="Кино: кинозал")
+        return invite.url
+    except discord.HTTPException:
+        log.exception("Не удалось открыть кинозал — включены ли Activities у приложения бота?")
+        return None
 log = logging.getLogger("cinema")
 DEFAULTS = {
     "cinema_slots": "10:00,13:00,18:00",  # анонс — в ближайшее из этих времён после добавления сеанса
@@ -22,8 +58,7 @@ DEFAULTS = {
                             "Сбор в {voice}. Хочешь напоминание — нажми «🔔 Уведомлять меня» ниже."),
     "cinema_text_reminder": "⏰ {role} До начала **{film}** осталось **{left}**! Сбор в {voice} 🍿",
     "cinema_text_start": ("🎬 **{film}** начинается! Заходи в {voice}\n\n"
-                          "▶️ Фильм с YouTube — жми «Смотрим вместе», он откроется прямо в Discord.\n"
-                          "🔗 Другая платформа — ведущий включит демонстрацию экрана.\n{link}"),
+                          "▶️ Жми кнопку ниже — фильм откроется прямо в Discord, у всех одновременно.\n{link}"),
 }
 TEXT_KEYS = {"cinema_text_morning": "📣 Анонс", "cinema_text_reminder": "⏰ Напоминание",
              "cinema_text_start": "🎬 Начало сеанса"}
@@ -191,7 +226,7 @@ class AddSessionModal(discord.ui.Modal, title="➕ Новый сеанс"):
     date = discord.ui.TextInput(label="Дата (ДД.ММ) — пусто = сегодня", required=False, max_length=10,
                                 placeholder="25.10")
     time = discord.ui.TextInput(label=config.tz("Время начала"), max_length=5, placeholder="20:30")
-    link = discord.ui.TextInput(label="Ссылка на фильм (YouTube и т.д.)", required=False, max_length=400)
+    link = discord.ui.TextInput(label="Ссылка: видеофайл, Яндекс Диск или YouTube", required=False, max_length=400)
     desc = discord.ui.TextInput(label="Описание (необязательно)", style=discord.TextStyle.paragraph,
                                 required=False, max_length=500)
 
@@ -459,7 +494,14 @@ class Cinema(commands.Cog):
         except Exception:
             log.exception("Не удалось отметить фильм просмотренным")
         view = discord.ui.View()
-        if voice:
+        link = s["link"] or ""
+        in_kinozal = False
+        if voice and kinozal_ready() and link.startswith("http") and not YOUTUBE.search(link):
+            # видеофайл или Яндекс Диск — показываем в своём кинозале прямо в Discord
+            if await kinozal_set(voice, link, s["title"]) and (url := await kinozal_invite(self.bot, voice)):
+                view.add_item(discord.ui.Button(label="Смотреть в кинозале", emoji="🍿", url=url))
+                in_kinozal = True
+        if voice and not in_kinozal:
             try:
                 invite = await voice.create_invite(max_age=6 * 3600, target_type=discord.InviteTarget.embedded_application,
                                                    target_application_id=config.WATCH_TOGETHER_APP_ID,
@@ -467,8 +509,8 @@ class Cinema(commands.Cog):
                 view.add_item(discord.ui.Button(label="Смотрим вместе", emoji="▶️", url=invite.url))
             except discord.HTTPException:
                 pass
-        if s["link"] and s["link"].startswith("http"):
-            view.add_item(discord.ui.Button(label="Ссылка на фильм", emoji="🔗", url=s["link"]))
+        if link.startswith("http") and not in_kinozal:
+            view.add_item(discord.ui.Button(label="Ссылка на фильм", emoji="🔗", url=link))
         role = channels(guild)[2]
         await afisha.send(content=role.mention if role else None, embed=embed, files=files,
                           view=view if view.children else None,
@@ -480,6 +522,30 @@ class Cinema(commands.Cog):
                     await ev.start()
             except discord.HTTPException:
                 pass
+
+    @app_commands.command(name="kinozal", description="Включить фильм в кинозале прямо сейчас (ссылка на видео или Яндекс Диск)")
+    @app_commands.describe(link="Прямая ссылка на MP4/WebM или публичная ссылка Яндекс Диска",
+                           title="Название (необязательно)")
+    @app_commands.guild_only()
+    async def kinozal(self, interaction: discord.Interaction, link: str, title: str | None = None):
+        if not kinozal_ready():
+            return await interaction.response.send_message(
+                "Кинозал ещё не подключён: нужен адрес сайта кинозала в настройках бота.", ephemeral=True)
+        voice = interaction.user.voice.channel if interaction.user.voice else channels(interaction.guild)[1]
+        if voice is None:
+            return await interaction.response.send_message("Зайди в голосовой канал, где будете смотреть.", ephemeral=True)
+        if not link.startswith("http") or YOUTUBE.search(link):
+            return await interaction.response.send_message(
+                "Нужна ссылка на видеофайл или Яндекс Диск. YouTube открывай через «Смотрим вместе».", ephemeral=True)
+        await interaction.response.defer(thinking=True)
+        name = title or link.split("?")[0].rstrip("/").split("/")[-1]
+        url = await kinozal_invite(self.bot, voice) if await kinozal_set(voice, link, name) else None
+        if not url:
+            return await interaction.followup.send("⚠️ Кинозал не ответил. Попробуй ещё раз через минуту.")
+        view = discord.ui.View()
+        view.add_item(discord.ui.Button(label="Смотреть в кинозале", emoji="🍿", url=url))
+        await interaction.followup.send(f"🍿 **{name}** — в {voice.mention}. Жми кнопку, фильм откроется прямо в Discord.",
+                                        view=view)
 
     @ticker.before_loop
     async def before(self):

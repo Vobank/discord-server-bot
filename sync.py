@@ -28,7 +28,7 @@ os.makedirs(RUNTIME, exist_ok=True)
 
 # что НЕ входит в обновление кода (у каждого ПК своё)
 LOCAL_FILES = {".env", "host.json", "bot.db", "bot.log", "version.txt", "bot.db-journal"}
-LOCAL_DIRS = {".venv", "runtime", "__pycache__", ".git", "backups"}
+LOCAL_DIRS = {".venv", "runtime", "__pycache__", ".git", "backups", "node_modules", ".wrangler"}
 
 
 def host_info() -> dict:

@@ -14,7 +14,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # словари, которые редактируются целиком (ключи — данные пользователя, а не имена настроек)
 MAPS = {"levels.roles", "custom_role_owners", "role_descriptions"}
-ENV = {"DISCORD_TOKEN", "GUILD_ID", "NEWS_FORWARDS", "FFMPEG_PATH", "VK_TOKEN"}
+ENV = {"DISCORD_TOKEN", "GUILD_ID", "NEWS_FORWARDS", "FFMPEG_PATH", "VK_TOKEN", "KINOZAL_URL", "KINOZAL_SECRET"}
 HOST = {"name", "priority", "mode"}
 RULES = {"title", "intro", "sections", "punishments", "footer"}
 # служебное: путь к баннеру меняется через x:banner, а не напрямую

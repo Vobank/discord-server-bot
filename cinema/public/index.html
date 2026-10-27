@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Кинозал</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main class="stage">
+    <video id="video" playsinline preload="auto" controls></video>
+    <div id="empty" class="overlay">
+      <div class="card">
+        <h1>Кинозал</h1>
+        <p id="empty-text">Фильм ещё не выбран. Вставьте ссылку на видеофайл или на файл на Яндекс Диске.</p>
+        <form id="load-form" class="row">
+          <input id="url" type="url" placeholder="https://…" autocomplete="off" required>
+          <button type="submit">Включить</button>
+        </form>
+        <p class="hint">Подходят файлы MP4 и WebM. Ссылка на Яндекс Диск должна быть публичной.</p>
+      </div>
+    </div>
+    <button id="tap" class="overlay tap" hidden>Нажмите, чтобы смотреть со звуком</button>
+    <div id="error" class="toast" hidden></div>
+  </main>
+  <footer class="bar">
+    <span id="title" class="title">Кинозал</span>
+    <span id="viewers" class="muted"></span>
+    <span class="spacer"></span>
+    <button id="change" class="link" hidden>Сменить фильм</button>
+  </footer>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
