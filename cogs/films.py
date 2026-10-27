@@ -21,13 +21,19 @@ from cogs import film_card
 
 COLOUR = discord.Colour(0xF5C518)
 DURATIONS = [("1 час", 1), ("6 часов", 6), ("12 часов", 12), ("1 день", 24), ("2 дня", 48), ("3 дня", 72)]
-GENRES = {
-    "fantasy": ("🧙", "Фэнтези"), "anime": ("🌸", "Аниме"), "action": ("💥", "Боевик"),
-    "comedy": ("😂", "Комедия"), "horror": ("😱", "Ужасы"), "scifi": ("🚀", "Фантастика"),
-    "thriller": ("🔪", "Триллер"), "detective": ("🔎", "Детектив"), "romance": ("💕", "Мелодрама"),
-    "drama": ("🎭", "Драма"), "adventure": ("🗺️", "Приключения"), "cartoon": ("🧸", "Мультфильм"),
-    "series": ("📺", "Сериал"), "other": ("📼", "Другое"),
+# Что предлагают: выбирается на шаге 1 и в «Заполнить / исправить» (один вариант)
+TYPES = {
+    "movie": ("🎬", "Фильм"), "series": ("📺", "Сериал"), "cartoon": ("🧸", "Мультфильм"),
+    "cartoon_series": ("🎠", "Мультсериал"), "anime": ("🌸", "Аниме"), "anime_movie": ("🎴", "Аниме-фильм"),
 }
+# старые жанры — только чтобы правильно показывать уже предложенные фильмы
+LEGACY = {
+    "fantasy": ("🧙", "Фэнтези"), "action": ("💥", "Боевик"), "comedy": ("😂", "Комедия"), "horror": ("😱", "Ужасы"),
+    "scifi": ("🚀", "Фантастика"), "thriller": ("🔪", "Триллер"), "detective": ("🔎", "Детектив"),
+    "romance": ("💕", "Мелодрама"), "drama": ("🎭", "Драма"), "adventure": ("🗺️", "Приключения"),
+    "other": ("📼", "Другое"),
+}
+GENRES = {**TYPES, **LEGACY}
 POPULAR_TOP = 5
 FIELDS = "id, title, count, suggested_by, watched_before, watched_at, genre, genres, year, country, duration, " \
          "description, poster, card_msg, author_id, status"
@@ -76,7 +82,7 @@ def card_embed(f: dict) -> discord.Embed:
     watched = f["status"] == "watched"
     e = discord.Embed(title=f"🎬 {f['title']}", colour=discord.Colour.green() if watched else COLOUR,
                       description=(f["description"] or "*Описания пока нет — нажми «✏️ Заполнить / исправить».*")[:4000])
-    e.add_field(name="🎭 Жанр", value=", ".join(genre_label(k) for k in genre_keys(f)))
+    e.add_field(name="🎞️ Тип", value=", ".join(genre_label(k) for k in genre_keys(f)))
     if f.get("year"):
         e.add_field(name="📅 Год", value=f["year"])
     if f.get("country"):
@@ -142,7 +148,7 @@ async def suggest(guild: discord.Guild, user: discord.abc.User, title: str, genr
     norm = normalize(title)
     if len(norm) < 2:
         return "⚠️ Напиши нормальное название фильма 🙂", None
-    genres = [g for g in (genres or []) if g in GENRES] or ["other"]
+    genres = [g for g in (genres or []) if g in GENRES] or ["movie"]
     details = {k: (v or "").strip()[:1500] or None for k, v in (details or {}).items()}
     row = await db.fetchone("SELECT id, title, count, suggested_by, status FROM films WHERE guild_id=? AND norm=?",
                             (guild.id, norm))
@@ -193,16 +199,15 @@ class SuggestModal(discord.ui.Modal):
 
 
 class GenrePickView(discord.ui.View):
-    """Шаг 1: жанры (можно несколько) → шаг 2: название и подробности."""
+    """Шаг 1: что это — фильм, сериал, мультфильм, мультсериал, аниме или аниме-фильм → шаг 2: название."""
 
     def __init__(self, then):
         super().__init__(timeout=600)
         self.then = then
         self.pick.options = [discord.SelectOption(label=name, emoji=emoji, value=key)
-                             for key, (emoji, name) in GENRES.items()]
-        self.pick.max_values = 5
+                             for key, (emoji, name) in TYPES.items()]
 
-    @discord.ui.select(placeholder="🎞️ Жанры фильма (можно до 5)", min_values=1,
+    @discord.ui.select(placeholder="🎞️ Что предлагаешь?", min_values=1, max_values=1,
                        options=[discord.SelectOption(label="-")])
     async def pick(self, interaction: discord.Interaction, select):
         await self.then(interaction, select.values)
@@ -271,8 +276,7 @@ class EditMenu(discord.ui.View):
         super().__init__(timeout=600)
         self.fid = fid
         self.genres.options = [discord.SelectOption(label=name, emoji=emoji, value=key)
-                               for key, (emoji, name) in GENRES.items()]
-        self.genres.max_values = 5
+                               for key, (emoji, name) in TYPES.items()]
 
     @discord.ui.button(label="Название, год, страна, время, описание", emoji="📝", style=discord.ButtonStyle.primary)
     async def details(self, interaction: discord.Interaction, _):
@@ -282,12 +286,13 @@ class EditMenu(discord.ui.View):
     async def poster(self, interaction: discord.Interaction, _):
         await interaction.response.send_modal(PosterModal(self.fid))
 
-    @discord.ui.select(placeholder="🎞️ Поменять жанры (до 5)", min_values=1, options=[discord.SelectOption(label="-")])
+    @discord.ui.select(placeholder="🎞️ Поменять: фильм, сериал, аниме…", min_values=1, max_values=1,
+                       options=[discord.SelectOption(label="-")])
     async def genres(self, interaction: discord.Interaction, select):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await db.execute("UPDATE films SET genres=?, genre=? WHERE id=?", (",".join(select.values), select.values[0], self.fid))
         await update_card(interaction.guild, self.fid)
-        await interaction.followup.send("✅ Жанры обновлены", ephemeral=True)
+        await interaction.followup.send("✅ Тип обновлён", ephemeral=True)
 
 
 class FilmCardView(discord.ui.View):
@@ -350,7 +355,7 @@ def list_embeds(wish: list[dict], watched: list[dict]) -> list[discord.Embed]:
     chunks.append(chunk)
     result = [discord.Embed(title=f"🍿 Подборка фильмов — {len(wish)}" if i == 0 else None, description=text,
                             colour=COLOUR) for i, text in enumerate(chunks[:8])]
-    result[0].set_footer(text="По жанрам и алфавиту · ×N — сколько человек хотят посмотреть")
+    result[0].set_footer(text="По типам и алфавиту · ×N — сколько человек хотят посмотреть")
     if watched:
         seen = "\n".join(f"✅ {f['title']}" + (f" · <t:{f['watched_at']}:d>" if f["watched_at"] else "")
                          for f in watched[:40])
@@ -367,7 +372,8 @@ class WishlistView(discord.ui.View):
     async def add(self, interaction: discord.Interaction, _):
         async def then(i: discord.Interaction, genres: list[str]):
             await i.response.send_modal(SuggestModal(genres))
-        await interaction.response.send_message("**Шаг 1.** Выбери жанры фильма 👇 (можно несколько)",
+        await interaction.response.send_message("**Шаг 1.** Что предлагаешь: фильм, сериал, мультфильм, "
+                                                "мультсериал, аниме или аниме-фильм? 👇",
                                                 view=GenrePickView(then), ephemeral=True)
 
     @discord.ui.button(label="Весь список", emoji="📋", custom_id="films:list")
@@ -386,7 +392,7 @@ async def post_panel(bot, channel: discord.TextChannel):
     await channel.send(embed=discord.Embed(
         title="🍿 Что посмотрим?",
         description=(
-            "Жми **➕ Предложить фильм**: выбери жанры и напиши название — остальное по желанию.\n"
+            "Жми **➕ Предложить фильм**: выбери, что это (фильм, сериал, аниме…), и напиши название — остальное по желанию.\n"
             "У каждого фильма появится **карточка** с обложкой. Хочешь тот же фильм — жми на ней **👍 Тоже хочу**.\n"
             "Обложку, описание, год и прочее можно добавить кнопкой **✏️ Заполнить / исправить** "
             f"(автор, Администрация и {config.ROLE_CINEMA}).\n"
@@ -448,10 +454,10 @@ class VoteSetupView(discord.ui.View):
         top = sorted(shown, key=lambda f: (-f["count"], normalize(f["title"])))[:25]
         self.pick.options = [discord.SelectOption(label=f["title"][:100], value=str(f["id"]),
                                                   description=f"{genre_label(genre_keys(f)[0])} · хотят ×{f['count']}")
-                             for f in top] or [discord.SelectOption(label="В этом жанре пока пусто", value="0")]
+                             for f in top] or [discord.SelectOption(label="Такого пока нет в подборке", value="0")]
         self.pick.max_values = max(1, min(5, len(top)))
         present = {k for f in items for k in genre_keys(f)}
-        self.genre_pick.options = [discord.SelectOption(label="Все жанры", emoji="🎬", value="all",
+        self.genre_pick.options = [discord.SelectOption(label="Всё подряд", emoji="🎬", value="all",
                                                         default=genre == "all")] + [
             discord.SelectOption(label=name, emoji=emoji, value=key, default=genre == key)
             for key, (emoji, name) in GENRES.items() if key in present]
@@ -460,7 +466,7 @@ class VoteSetupView(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         return not await perms.deny(interaction, "cinema")
 
-    @discord.ui.select(placeholder="🎞️ Жанр голосования", options=[discord.SelectOption(label="-")], row=0)
+    @discord.ui.select(placeholder="🎞️ Что голосуем: фильмы, сериалы, аниме…", options=[discord.SelectOption(label="-")], row=0)
     async def genre_pick(self, interaction: discord.Interaction, select):
         await interaction.response.edit_message(view=VoteSetupView(self.all_items, select.values[0], self.hours))
 
@@ -546,7 +552,7 @@ async def open_vote(interaction: discord.Interaction):
         return await interaction.response.send_message("В подборке пока нет фильмов", ephemeral=True)
     await interaction.response.send_message(
         embed=discord.Embed(title="🗳️ Голосование за фильм", colour=COLOUR,
-                            description="Можно выбрать **жанр** (например, только аниме). "
+                            description="Можно выбрать **тип** (например, только аниме). "
                                         "Выбери до 5 фильмов вручную и нажми **Запустить** — или сразу "
                                         "**🔝 Топ-5** (больше всего 👍) / **🎲 Случайные 5**.\n"
                                         "Опрос появится в 🎬・афиша с пингом 🍿 Киноманов."),

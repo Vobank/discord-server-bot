@@ -46,8 +46,8 @@ async def check(member: discord.Member, only: set[str] | None = None):
     if member.bot or not config.enabled("levels"):
         return
     values = await progress(member)
-    channel = discord.utils.get(member.guild.text_channels, name=config.CH_ACHIEVEMENTS) or \
-        discord.utils.get(member.guild.text_channels, name=config.CH_LEVELS)
+    # объявления — только в канале достижений (нет канала — молча, без запасного «уровней»)
+    channel = discord.utils.get(member.guild.text_channels, name=config.CH_ACHIEVEMENTS)
     for ach in config.ACHIEVEMENTS:
         if only and ach["stat"] not in only:
             continue
