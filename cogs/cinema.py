@@ -369,8 +369,9 @@ class CinemaPanelView(discord.ui.View):
     @discord.ui.button(label="Сеансы", emoji="📋", custom_id="cin:list")
     async def list_btn(self, interaction, _):
         items = await sessions(interaction.guild.id)
-        await interaction.response.send_message(embed=await schedule_embed(interaction.guild),
-                                                view=DeleteSessionView(items) if items else None, ephemeral=True)
+        extra = {"view": DeleteSessionView(items)} if items else {}  # view=None библиотека не принимает
+        await interaction.response.send_message(embed=await schedule_embed(interaction.guild), ephemeral=True,
+                                                delete_after=180, **extra)
 
     @discord.ui.button(label="Тексты", emoji="✏️", custom_id="cin:texts")
     async def texts(self, interaction, _):
