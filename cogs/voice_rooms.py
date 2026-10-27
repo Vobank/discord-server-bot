@@ -210,11 +210,30 @@ async def kick_out(ch: discord.VoiceChannel, member: discord.Member):
         await member.move_to(None)
 
 
+def rename_for(ch: discord.VoiceChannel, new: discord.Member, old: discord.Member | None = None):
+    """Комната называлась по нику хозяина — теперь называется по нику нового. Своё название
+    (например «🎮・Катка») не трогаем. В фоне: Discord разрешает переименовать канал лишь 2 раза за 10 минут,
+    и при частой передаче переименование подождёт, а кнопки — нет."""
+    emoji, sep, name = ch.name.partition("・")
+    if not sep:
+        emoji, name = "🔊", ch.name
+    if old is not None and name != old.display_name and not (len(ch.name) == 100 and old.display_name.startswith(name)):
+        return
+
+    async def run():
+        try:
+            await ch.edit(name=f"{emoji}・{new.display_name}"[:100], reason=f"Комнату передали {new}")
+        except discord.HTTPException:
+            pass
+    asyncio.create_task(run())
+
+
 async def transfer(ch: discord.VoiceChannel, old: discord.Member, new: discord.Member):
     await db.execute("UPDATE temp_voice SET owner_id=? WHERE channel_id=?", (new.id, ch.id))
     owner_ow = ch.overwrites_for(old)
     await ch.set_permissions(old, overwrite=None)
     await ch.set_permissions(new, overwrite=owner_ow)
+    rename_for(ch, new, old)
 
 
 # ---------- Панель в #🎮・управление ----------
@@ -389,6 +408,7 @@ class RoomPanelView(discord.ui.View):
             await db.execute("UPDATE temp_voice SET owner_id=? WHERE channel_id=?", (interaction.user.id, ch.id))
             await ch.set_permissions(interaction.user, view_channel=True, connect=True, speak=True,
                                      manage_channels=True, move_members=True, mute_members=True)
+            rename_for(ch, interaction.user)  # прежний хозяин ушёл с сервера — его ника не знаем
         if is_locked(ch):
             await admit(ch, interaction.user)
         await interaction.response.send_message(f"🙋 Хозяин ушёл — теперь {ch.mention} твоя", ephemeral=True, delete_after=GONE)
