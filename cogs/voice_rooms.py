@@ -1,17 +1,20 @@
 """Личные голосовые: зашёл в «・Создать канал» — бот создал комнату с твоим ником, опустела — удалил.
 Каналы-создатели хранятся в таблице voice_creators (их добавляет /setup).
-Управление: кнопки в #🎮・управление или команды /room."""
+Управление: панель в чате комнаты (раз в 2 минуты бот опускает её вниз) или команды /room.
+Кнопки музыки (песня, радио, очередь) — для всех, кто сидит в комнате, остальное — для хозяина."""
 import asyncio
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 import config
 import db
 import perms
 
 NOT_OWNER = "🔊 Зайди в **свою** комнату (через любой «・Создать канал»), чтобы ею управлять."
+MUSIC_BUTTONS = {"room:music", "room:radio", "room:queue"}  # ими пользуются все, кто в комнате
+PANEL_EVERY = 2  # минуты: панель снова внизу, если в чате появились сообщения
 
 
 async def owned_room(member: discord.Member) -> discord.VoiceChannel | None:
@@ -159,10 +162,22 @@ class RoomPanelView(discord.ui.View):
         super().__init__(timeout=None)
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if (interaction.data or {}).get("custom_id") == "room:claim" or await owned_room(interaction.user):
+        custom_id = (interaction.data or {}).get("custom_id")
+        if custom_id in MUSIC_BUTTONS:
+            voice = interaction.user.voice
+            if voice and voice.channel and voice.channel.id == interaction.channel_id:
+                return True
+            await interaction.response.send_message("🎧 Зайди в эту комнату, чтобы включать музыку",
+                                                    ephemeral=True, delete_after=15)
+            return False
+        if custom_id == "room:claim" or await owned_room(interaction.user):
             return True
         await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=15)
         return False
+
+    @staticmethod
+    def music(interaction: discord.Interaction):
+        return interaction.client.get_cog("Music")
 
     @discord.ui.button(label="Название", emoji="✏️", custom_id="room:name", row=0)
     async def name(self, interaction, _):
@@ -262,6 +277,23 @@ class RoomPanelView(discord.ui.View):
                                      manage_channels=True, move_members=True, mute_members=True)
         await interaction.response.send_message(f"🙋 Хозяин ушёл — теперь {ch.mention} твоя", ephemeral=True, delete_after=15)
 
+    @discord.ui.button(label="Музыка", emoji="🎵", style=discord.ButtonStyle.success, custom_id="room:music", row=4)
+    async def music_btn(self, interaction, _):
+        from cogs.music import SongModal
+        await interaction.response.send_modal(SongModal(self.music(interaction)))
+
+    @discord.ui.button(label="Радио", emoji="📻", custom_id="room:radio", row=4)
+    async def radio_btn(self, interaction, _):
+        from cogs.music import RadioView
+        await interaction.response.send_message("📻 Какую станцию включить?", view=RadioView(self.music(interaction)),
+                                                ephemeral=True, delete_after=120)
+
+    @discord.ui.button(label="Очередь", emoji="📄", custom_id="room:queue", row=4)
+    async def queue_btn(self, interaction, _):
+        from cogs.music import queue_embed
+        st = self.music(interaction).state(interaction.guild.id)
+        await interaction.response.send_message(embed=queue_embed(st), ephemeral=True, delete_after=60)
+
 
 def panel_embed(owner: discord.Member) -> discord.Embed:
     return discord.Embed(
@@ -276,7 +308,9 @@ def panel_embed(owner: discord.Member) -> discord.Embed:
             "🔇 **Заглушить** / 🔊 **Разглушить** человека — только в твоей комнате\n"
             "ℹ️ **Инфо** — кто пущен, заблокирован, заглушен\n"
             "🙋 **Забрать комнату** — если хозяин ушёл, а ты остался\n\n"
-            "Кнопками пользуется хозяин комнаты. Ответы бота видишь только ты, и они исчезают сами."
+            "🎵 **Музыка** — название, ссылка или опиши песню, ИИ угадает · 📻 **Радио** · 📄 **Очередь**\n\n"
+            "Музыку включает любой, кто в комнате, остальными кнопками пользуется хозяин. "
+            "Ответы бота видишь только ты, и они исчезают сами."
         ),
         colour=discord.Colour.blurple(),
     )
@@ -302,7 +336,52 @@ async def post_room_panel(bot: commands.Bot, channel: discord.TextChannel):
 class VoiceRooms(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.panels: dict[int, int] = {}  # комната → сообщение с панелью
         bot.add_view(RoomPanelView())
+        self.keep_panels_low.start()
+
+    def cog_unload(self):
+        self.keep_panels_low.cancel()
+
+    async def send_panel(self, room: discord.VoiceChannel, owner: discord.Member | None):
+        """Новая панель внизу чата комнаты, старая — удаляется."""
+        old = self.panels.pop(room.id, None)
+        if old:
+            try:
+                await room.get_partial_message(old).delete()
+            except discord.HTTPException:
+                pass
+        if owner is None:
+            return
+        try:
+            self.panels[room.id] = (await room.send(embed=panel_embed(owner), view=RoomPanelView())).id
+        except discord.HTTPException:
+            pass
+
+    @tasks.loop(minutes=PANEL_EVERY)
+    async def keep_panels_low(self):
+        """Раз в 2 минуты: если в чате комнаты панель уехала вверх — присылаем её снова последним сообщением."""
+        for channel_id, owner_id in await db.fetchall("SELECT channel_id, owner_id FROM temp_voice"):
+            room = self.bot.get_channel(channel_id)
+            if not isinstance(room, discord.VoiceChannel) or not room.members:
+                continue
+            panel = self.panels.get(room.id)
+            if panel is None:  # бот перезапускался — ищем свою панель в чате
+                try:
+                    async for msg in room.history(limit=50):
+                        if msg.author == self.bot.user and any(getattr(c, "custom_id", None) == "room:name"
+                                                               for row in msg.components for c in row.children):
+                            panel = self.panels[room.id] = msg.id
+                            break
+                except discord.HTTPException:
+                    continue
+            if panel is not None and room.last_message_id == panel:
+                continue
+            await self.send_panel(room, room.guild.get_member(owner_id))
+
+    @keep_panels_low.before_loop
+    async def before_panels(self):
+        await self.bot.wait_until_ready()
 
     @commands.Cog.listener()
     async def on_ready(self):
@@ -348,16 +427,14 @@ class VoiceRooms(commands.Cog):
         except discord.HTTPException:
             await self.cleanup(room)
             return
-        try:
-            await room.send(embed=panel_embed(member), view=RoomPanelView())
-        except discord.HTTPException:
-            pass
+        await self.send_panel(room, member)
 
     async def cleanup(self, channel):
         if not isinstance(channel, discord.VoiceChannel) or channel.members:
             return
         if await db.fetchone("SELECT 1 FROM temp_voice WHERE channel_id=?", (channel.id,)):
             await db.execute("DELETE FROM temp_voice WHERE channel_id=?", (channel.id,))
+            self.panels.pop(channel.id, None)
             try:
                 await channel.delete(reason="Комната опустела")
             except discord.NotFound:
@@ -374,7 +451,7 @@ class VoiceRooms(commands.Cog):
     @room.command(name="panel", description="Показать панель управления в чате своей комнаты")
     async def room_panel(self, interaction: discord.Interaction):
         if ch := await self.own_room(interaction):
-            await ch.send(embed=panel_embed(interaction.user), view=RoomPanelView())
+            await self.send_panel(ch, interaction.user)
             await interaction.response.send_message(f"✅ Панель в чате {ch.mention}", ephemeral=True, delete_after=15)
 
     @room.command(name="name", description="Переименовать свою комнату")

@@ -2,10 +2,13 @@
 год · страна · длительность + описание). Предложить можно одним названием — потом автор, Киноманы или
 админы дозаполняют и исправляют карточку кнопкой «✏️ Заполнить / исправить». Повторов нет: кнопка
 «👍 Тоже хочу» добавляет голос (×N). Админ в #🎬・кино-настройки устраивает голосование и отмечает
-просмотренное; начался сеанс с таким названием — фильм сам уходит в «Уже посмотрели»."""
+просмотренное; начался сеанс с таким названием — фильм сам уходит в «Уже посмотрели».
+ИИ (ai.py) сам дозаполняет новые карточки: год, страну, длительность, описание и обложку.
+Ответы бота на кнопки видит только нажавший, и они исчезают сами."""
 import asyncio
 import datetime
 import io
+import logging
 import random
 import re
 import time
@@ -14,10 +17,13 @@ import aiohttp
 import discord
 from discord.ext import commands
 
+import ai
 import config
 import db
 import perms
 from cogs import film_card
+
+log = logging.getLogger(__name__)
 
 COLOUR = discord.Colour(0xF5C518)
 DURATIONS = [("1 час", 1), ("6 часов", 6), ("12 часов", 12), ("1 день", 24), ("2 дня", 48), ("3 дня", 72)]
@@ -35,6 +41,8 @@ LEGACY = {
 }
 GENRES = {**TYPES, **LEGACY}
 POPULAR_TOP = 5
+GONE = 15        # через сколько секунд исчезают ответы бота
+MENU_GONE = 180  # меню и списки — дольше, чтобы успеть выбрать
 FIELDS = "id, title, count, suggested_by, watched_before, watched_at, genre, genres, year, country, duration, " \
          "description, poster, card_msg, author_id, status"
 
@@ -119,7 +127,7 @@ async def update_card(guild: discord.Guild, film_id: int, new: bool = False):
     """Создать или обновить карточку фильма в #🍿・подборка."""
     f = await film_by(id=film_id)
     channel = discord.utils.get(guild.text_channels, name=config.CH_CINEMA_WISHLIST)
-    if not f or not channel:
+    if not f or not channel or f["status"] == "planned":  # planned — фильм сеанса, без карточки в подборке
         return
     view = None if f["status"] == "watched" else FilmCardView()
     if f["card_msg"] and not new:
@@ -138,6 +146,80 @@ def can_edit(member: discord.Member, f: dict) -> bool:
         return True
     names = {r.name for r in member.roles}
     return bool(names & (config.STAFF_ROLES | {config.ROLE_CINEMA}))
+
+
+async def done(interaction: discord.Interaction, text: str, after: int = GONE):
+    """Ответ после defer — видит только нажавший, исчезает сам."""
+    msg = await interaction.followup.send(text, ephemeral=True, wait=True)
+
+    async def later():
+        await asyncio.sleep(after)
+        try:
+            await msg.delete()
+        except discord.HTTPException:
+            pass
+    asyncio.create_task(later())
+
+
+# ---------- ИИ: дозаполнить карточку ----------
+FIELD_NAMES = {"year": "год", "country": "страну", "duration": "длительность", "description": "описание",
+               "poster": "обложку"}
+
+
+async def autofill(guild: discord.Guild, fid: int, overwrite: bool = False) -> str:
+    """Год, страна, длительность, описание (пустые, а с overwrite — все) и обложка, если её нет."""
+    f = await film_by(id=fid)
+    if not f:
+        return "Фильм не найден"
+    key = genre_keys(f)[0]
+    kind = TYPES[key][1].lower() if key in TYPES else "фильм"
+    info, problem = {}, ""
+    try:
+        info = await ai.film_info(f["title"], kind)
+        if not info.get("found"):
+            problem, info = f"не нашёл «{f['title']}» — проверь название", {}
+    except ai.AIError as e:
+        problem = str(e)
+    updates = {}
+    for k, limit in (("year", 20), ("country", 80), ("duration", 30), ("description", 1500)):
+        value = (info.get(k) or "").strip()[:limit]
+        if value and (overwrite or not f[k]):
+            updates[k] = value
+    if not f["poster"]:
+        data = await ai.poster(f["title"], info)
+        if data:
+            updates["poster"] = await asyncio.to_thread(film_card.shrink_poster, data)
+    if updates:
+        await db.execute(f"UPDATE films SET {', '.join(k + '=?' for k in updates)} WHERE id=?", (*updates.values(), fid))
+        await update_card(guild, fid)
+    filled = ", ".join(FIELD_NAMES[k] for k in updates)
+    if filled:
+        return f"🤖 Заполнил: {filled}" + (f"\n⚠️ Остальное не вышло: {problem}" if problem else "")
+    return f"🤖 Не получилось: {problem}" if problem else "🤖 Всё уже заполнено"
+
+
+def autofill_later(guild: discord.Guild, fid: int):
+    """Дозаполнить в фоне: человек не ждёт, карточка обновится сама."""
+    async def run():
+        try:
+            await autofill(guild, fid)
+        except Exception:
+            log.exception("ИИ не дозаполнил фильм %s", fid)
+    if ai.ready():
+        asyncio.create_task(run())
+
+
+async def prepare_session_film(guild: discord.Guild, title: str):
+    """Новый сеанс: найти данные и обложку для афиши. Фильма нет в подборке — запоминаем его без карточки."""
+    norm = normalize(title)
+    if len(norm) < 2:
+        return
+    row = await db.fetchone("SELECT id FROM films WHERE guild_id=? AND norm=?", (guild.id, norm))
+    if row is None:
+        await db.execute("INSERT INTO films (guild_id, title, norm, suggested_by, created_at, status) "
+                         "VALUES (?,?,?,'',?,'planned')", (guild.id, title.strip()[:100], norm, int(time.time())))
+        row = await db.fetchone("SELECT id FROM films WHERE guild_id=? AND norm=?", (guild.id, norm))
+    autofill_later(guild, row[0])
 
 
 # ---------- предложить фильм ----------
@@ -162,6 +244,10 @@ async def suggest(guild: discord.Guild, user: discord.abc.User, title: str, genr
         return f"✅ **{title}** добавлен в подборку!", fid
     fid, old_title, count, by, status = row
     voters = set(filter(None, by.split(",")))
+    if status == "planned":  # был только в афише — теперь в подборке по-настоящему
+        await db.execute("UPDATE films SET status='wish', count=1, suggested_by=?, author_id=? WHERE id=?",
+                         (uid, user.id, fid))
+        return f"✅ **{old_title}** добавлен в подборку!", fid
     if status == "watched":  # уже смотрели — возвращаем для новых людей
         await db.execute("UPDATE films SET status='wish', watched_before=1, count=1, suggested_by=? WHERE id=?", (uid, fid))
         return f"🔁 **{old_title}** мы уже смотрели — вернул в подборку для тех, кто не видел.", fid
@@ -194,8 +280,12 @@ class SuggestModal(discord.ui.Modal):
                                    "duration": self.duration.value, "description": self.description.value})
         if fid:
             await update_card(interaction.guild, fid)
-        await interaction.followup.send(text + ("\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» "
-                                                "на карточке." if fid else ""), ephemeral=True)
+            if text.startswith("✅") and ai.ready():
+                autofill_later(interaction.guild, fid)
+                text += "\n🤖 Год, описание и обложку ИИ допишет сам примерно через минуту."
+            else:
+                text += "\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» на карточке."
+        await done(interaction, text, 30)
 
 
 class GenrePickView(discord.ui.View):
@@ -234,13 +324,14 @@ class DetailsModal(discord.ui.Modal):
         clash = await db.fetchone("SELECT id FROM films WHERE guild_id=? AND norm=? AND id<>?",
                                   (interaction.guild.id, norm, self.fid))
         if clash:
-            return await interaction.response.send_message("⚠️ Фильм с таким названием уже есть в подборке", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Фильм с таким названием уже есть в подборке",
+                                                           ephemeral=True, delete_after=GONE)
         await interaction.response.defer(ephemeral=True, thinking=True)
         await db.execute("UPDATE films SET title=?, norm=?, year=?, country=?, duration=?, description=? WHERE id=?",
                          (title, norm, self.year.value.strip() or None, self.country.value.strip() or None,
                           self.duration.value.strip() or None, self.description.value.strip() or None, self.fid))
         await update_card(interaction.guild, self.fid)
-        await interaction.followup.send("✅ Карточка обновлена", ephemeral=True)
+        await done(interaction, "✅ Карточка обновлена")
 
 
 class PosterModal(discord.ui.Modal, title="🖼️ Обложка фильма"):
@@ -265,10 +356,10 @@ class PosterModal(discord.ui.Modal, title="🖼️ Обложка фильма")
         except Exception:
             data = None
         if not data:
-            return await interaction.followup.send("⚠️ Не получилось открыть картинку — попробуй другую", ephemeral=True)
+            return await done(interaction, "⚠️ Не получилось открыть картинку — попробуй другую")
         await db.execute("UPDATE films SET poster=? WHERE id=?", (data, self.fid))
         await update_card(interaction.guild, self.fid)
-        await interaction.followup.send("✅ Обложка поставлена", ephemeral=True)
+        await done(interaction, "✅ Обложка поставлена")
 
 
 class EditMenu(discord.ui.View):
@@ -286,13 +377,33 @@ class EditMenu(discord.ui.View):
     async def poster(self, interaction: discord.Interaction, _):
         await interaction.response.send_modal(PosterModal(self.fid))
 
+    @discord.ui.button(label="Заполнить с ИИ", emoji="🤖", row=1)
+    async def ai_fill(self, interaction: discord.Interaction, _):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        await done(interaction, await autofill(interaction.guild, self.fid, overwrite=True), 30)
+
+    @discord.ui.button(label="Нарисовать обложку", emoji="🎨", row=1)
+    async def ai_poster(self, interaction: discord.Interaction, _):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        f = await film_by(id=self.fid)
+        try:
+            data = await ai.image(f"atmospheric cinematic movie poster for \"{f['title']}\""
+                                  + (f": {f['description'][:300]}" if f["description"] else "")
+                                  + ", cinematic lighting, vertical movie poster, no text, no letters")
+        except ai.AIError as e:
+            return await done(interaction, f"⚠️ {e}")
+        await db.execute("UPDATE films SET poster=? WHERE id=?",
+                         (await asyncio.to_thread(film_card.shrink_poster, data), self.fid))
+        await update_card(interaction.guild, self.fid)
+        await done(interaction, "🎨 Нарисовал новую обложку")
+
     @discord.ui.select(placeholder="🎞️ Поменять: фильм, сериал, аниме…", min_values=1, max_values=1,
-                       options=[discord.SelectOption(label="-")])
+                       options=[discord.SelectOption(label="-")], row=2)
     async def genres(self, interaction: discord.Interaction, select):
         await interaction.response.defer(ephemeral=True, thinking=True)
         await db.execute("UPDATE films SET genres=?, genre=? WHERE id=?", (",".join(select.values), select.values[0], self.fid))
         await update_card(interaction.guild, self.fid)
-        await interaction.followup.send("✅ Тип обновлён", ephemeral=True)
+        await done(interaction, "✅ Тип обновлён")
 
 
 class FilmCardView(discord.ui.View):
@@ -305,24 +416,24 @@ class FilmCardView(discord.ui.View):
     async def want(self, interaction: discord.Interaction, _):
         f = await film_by(card_msg=interaction.message.id)
         if not f:
-            return await interaction.response.send_message("Фильм не найден", ephemeral=True)
+            return await interaction.response.send_message("Фильм не найден", ephemeral=True, delete_after=GONE)
         await interaction.response.defer(ephemeral=True, thinking=True)
         text, fid = await suggest(interaction.guild, interaction.user, f["title"])
         if fid:
             await update_card(interaction.guild, fid)
-        await interaction.followup.send(text, ephemeral=True)
+        await done(interaction, text)
 
     @discord.ui.button(label="Заполнить / исправить", emoji="✏️", custom_id="film:edit")
     async def edit(self, interaction: discord.Interaction, _):
         f = await film_by(card_msg=interaction.message.id)
         if not f:
-            return await interaction.response.send_message("Фильм не найден", ephemeral=True)
+            return await interaction.response.send_message("Фильм не найден", ephemeral=True, delete_after=GONE)
         if not can_edit(interaction.user, f):
             return await interaction.response.send_message(
                 f"✏️ Исправлять карточку могут автор, Администрация и роль {config.ROLE_CINEMA} "
-                "(её можно взять кнопкой «🔔 Уведомлять меня» в 🎬・афиша).", ephemeral=True)
+                "(её можно взять кнопкой «🔔 Уведомлять меня» в 🎬・афиша).", ephemeral=True, delete_after=30)
         await interaction.response.send_message(f"✏️ **{f['title']}** — что поправить?", view=EditMenu(f["id"]),
-                                                ephemeral=True)
+                                                ephemeral=True, delete_after=MENU_GONE)
 
 
 # ---------- список (по кнопке и в афише) ----------
@@ -372,15 +483,19 @@ class WishlistView(discord.ui.View):
     async def add(self, interaction: discord.Interaction, _):
         async def then(i: discord.Interaction, genres: list[str]):
             await i.response.send_modal(SuggestModal(genres))
+            try:  # шаг 1 больше не нужен
+                await interaction.delete_original_response()
+            except discord.HTTPException:
+                pass
         await interaction.response.send_message("**Шаг 1.** Что предлагаешь: фильм, сериал, мультфильм, "
                                                 "мультсериал, аниме или аниме-фильм? 👇",
-                                                view=GenrePickView(then), ephemeral=True)
+                                                view=GenrePickView(then), ephemeral=True, delete_after=MENU_GONE)
 
     @discord.ui.button(label="Весь список", emoji="📋", custom_id="films:list")
     async def full_list(self, interaction: discord.Interaction, _):
         g = interaction.guild
         await interaction.response.send_message(embeds=list_embeds(await films(g.id), await films(g.id, "watched"))[:10],
-                                                ephemeral=True)
+                                                ephemeral=True, delete_after=MENU_GONE)
 
 
 async def post_panel(bot, channel: discord.TextChannel):

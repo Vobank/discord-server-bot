@@ -1,6 +1,8 @@
 """Музыка: поиск по названию (YouTube → SoundCloud) или ссылка с любого сайта, который знает yt-dlp
-(YouTube, SoundCloud, VK видео, Twitch, Bandcamp и ещё 1000+).
-Управлять можно только сидя в одном голосовом канале с ботом. Панель с кнопками — в чате этого канала."""
+(YouTube, SoundCloud, VK видео, Twitch, Bandcamp и ещё 1000+). Не помнишь название — ИИ угадает песню
+по описанию или строчке (ai.py). Радиостанции — /radio или кнопка 📻.
+Управлять можно только сидя в одном голосовом канале с ботом. Панель с кнопками — в чате этого канала.
+Когда бот уходит из канала, его сообщения о песнях удаляются."""
 import asyncio
 import logging
 import os
@@ -15,6 +17,7 @@ import yt_dlp
 from discord import app_commands
 from discord.ext import commands
 
+import ai
 import perms
 import vk_music
 from cogs import achievements
@@ -48,6 +51,26 @@ GENRES = ["Фонк", "Рэп", "Русский рэп", "Рок", "Русски
           "Дрилл", "Метал", "Панк", "Джаз", "Классика", "Шансон", "Хип-хоп 90-х", "K-pop", "Аниме опенинги",
           "Музыка для игр", "Синтвейв", "Drum and Bass", "Реггетон", "Инди"]
 
+# Радиостанции: (название, эмодзи, поток). Не больше 25 — столько влезает в список Discord.
+RADIO = [
+    ("Европа Плюс", "🌍", "https://ep256.hostingradio.ru:8052/europaplus256.mp3"),
+    ("Русское Радио", "🎙️", "https://rusradio.hostingradio.ru/rusradio128.mp3"),
+    ("Радио Рекорд", "🔴", "https://radiorecord.hostingradio.ru/rr_main96.aacp"),
+    ("Record Фонк", "🚗", "https://radiorecord.hostingradio.ru/phonk96.aacp"),
+    ("Record Russian Mix", "🪩", "https://radiorecord.hostingradio.ru/rus96.aacp"),
+    ("Record Рок", "🎸", "https://radiorecord.hostingradio.ru/rock96.aacp"),
+    ("Record Lo-fi", "☕", "https://radiorecord.hostingradio.ru/lofi96.aacp"),
+    ("DFM", "💃", "https://dfm.hostingradio.ru/dfm96.aacp"),
+    ("Хит FM", "🔥", "https://hitfm.hostingradio.ru/hitfm128.mp3"),
+    ("Maximum", "⚡", "https://maximum.hostingradio.ru/maximum128.mp3"),
+    ("Наше Радио", "🤘", "https://nashe1.hostingradio.ru/nashe-128.mp3"),
+    ("Rock FM", "🪨", "https://nashe1.hostingradio.ru/rock-128.mp3"),
+    ("Ретро FM", "📼", "https://retro.hostingradio.ru:8043/retro256.mp3"),
+    ("Дорожное радио", "🛣️", "https://dorognoe.hostingradio.ru/dorognoe"),
+    ("Радио Шансон", "🎻", "https://chanson.hostingradio.ru:8041/chanson128.mp3"),
+    ("Lo-fi (laut.fm)", "🌙", "https://lofi.stream.laut.fm/lofi"),
+]
+
 
 @dataclass
 class Track:
@@ -61,6 +84,7 @@ class Track:
     stream_url: str | None = None
     requester: discord.Member | None = None
     fetched_at: float = field(default_factory=time.monotonic)
+    live: bool = False            # радио: поток бесконечный, ссылка не протухает
 
     @property
     def name(self) -> str:
@@ -71,6 +95,8 @@ class Track:
         return f"[{self.name}]({self.page_url})" if self.page_url else self.name
 
     def needs_refresh(self) -> bool:
+        if self.live:
+            return not self.stream_url
         return not self.stream_url or time.monotonic() - self.fetched_at > STREAM_TTL
 
     def refresh(self):
@@ -171,6 +197,7 @@ class GuildMusic:
         self.volume = 0.5
         self.loop = "off"            # off / track / queue
         self.manual: str | None = None  # skip / back / stop — почему остановили трек
+        self.messages: list[tuple[int, int]] = []  # (канал, сообщение) — удалим, когда бот уйдёт
 
 
 def added_embed(track: Track, position: int) -> discord.Embed:
@@ -184,18 +211,21 @@ def added_embed(track: Track, position: int) -> discord.Embed:
     return embed
 
 
-def panel_embed(st: GuildMusic, paused: bool = False) -> discord.Embed:
+def panel_embeds(st: GuildMusic, paused: bool = False) -> list[discord.Embed]:
+    """«Сейчас играет»: сверху большая обложка, под ней надпись."""
     t = st.current
-    embed = discord.Embed(title="⏸️ На паузе" if paused else "💿 Сейчас играет ♪",
-                          description=t.link, colour=COLOUR)
+    title = "⏸️ На паузе" if paused else ("📻 В эфире" if t.live else "💿 Сейчас играет ♪")
+    embed = discord.Embed(title=title, description=t.link, colour=COLOUR)
     embed.add_field(name="Добавил", value=t.requester.mention if t.requester else "—")
-    embed.add_field(name="Автор", value=t.author or "—")
-    embed.add_field(name="Длительность", value=f"`{fmt_duration(t.duration)}`")
-    if t.thumbnail:
-        embed.set_thumbnail(url=t.thumbnail)
-    embed.set_footer(text=f"🔊 {round(st.volume * 100)}%  ·  Повтор: {LOOP_NAMES[st.loop]}  ·  "
-                          f"В очереди: {len(st.queue)}  ·  {t.source}")
-    return embed
+    if not t.live:
+        embed.add_field(name="Автор", value=t.author or "—")
+        embed.add_field(name="Длительность", value=f"`{fmt_duration(t.duration)}`")
+    embed.set_footer(text=f"Повтор: {LOOP_NAMES[st.loop]}  ·  В очереди: {len(st.queue)}  ·  {t.source}")
+    if not t.thumbnail:
+        return [embed]
+    cover = discord.Embed(colour=COLOUR)
+    cover.set_image(url=t.thumbnail)
+    return [cover, embed]
 
 
 def queue_embed(st: GuildMusic) -> discord.Embed:
@@ -239,7 +269,7 @@ class PlayerView(discord.ui.View):
         if self.st.current is None:
             return await interaction.response.defer()
         vc = interaction.guild.voice_client
-        await interaction.response.edit_message(embed=panel_embed(self.st, paused=bool(vc and vc.is_paused())),
+        await interaction.response.edit_message(embeds=panel_embeds(self.st, paused=bool(vc and vc.is_paused())),
                                                 view=PlayerView(self.cog, self.st))
 
     # --- 1 ряд ---
@@ -271,7 +301,7 @@ class PlayerView(discord.ui.View):
 
     @discord.ui.button(emoji="📄", style=discord.ButtonStyle.secondary, row=0)
     async def show_queue(self, interaction: discord.Interaction, _):
-        await interaction.response.send_message(embed=queue_embed(self.st), ephemeral=True)
+        await interaction.response.send_message(embed=queue_embed(self.st), ephemeral=True, delete_after=60)
 
     # --- 2 ряд ---
     @discord.ui.button(emoji="🔂", row=1)
@@ -291,15 +321,44 @@ class PlayerView(discord.ui.View):
         self.st.queue = deque(items)
         await self.redraw(interaction)
 
-    @discord.ui.button(emoji="🔉", style=discord.ButtonStyle.secondary, row=1)
-    async def volume_down(self, interaction: discord.Interaction, _):
-        self.cog.set_volume(interaction.guild, self.st.volume - 0.1)
-        await self.redraw(interaction)
+    @discord.ui.button(emoji="📻", style=discord.ButtonStyle.secondary, row=1)
+    async def radio(self, interaction: discord.Interaction, _):
+        await interaction.response.send_message("📻 Какую станцию включить?", view=RadioView(self.cog),
+                                                ephemeral=True, delete_after=120)
 
-    @discord.ui.button(emoji="🔊", style=discord.ButtonStyle.secondary, row=1)
-    async def volume_up(self, interaction: discord.Interaction, _):
-        self.cog.set_volume(interaction.guild, self.st.volume + 0.1)
-        await self.redraw(interaction)
+
+class RadioView(discord.ui.View):
+    """Список радиостанций: выбрал — играет сразу, очередь песен очищается."""
+
+    def __init__(self, cog: "Music"):
+        super().__init__(timeout=300)
+        self.cog = cog
+        self.pick.options = [discord.SelectOption(label=name, emoji=emoji, value=str(i))
+                             for i, (name, emoji, _) in enumerate(RADIO)]
+
+    @discord.ui.select(placeholder="📻 Выбери радиостанцию", options=[discord.SelectOption(label="-")])
+    async def pick(self, interaction: discord.Interaction, select):
+        await self.cog.start_radio(interaction, int(select.values[0]))
+
+
+class SongModal(discord.ui.Modal, title="🎵 Включить музыку"):
+    """Кнопка «Музыка» в панели комнаты: название или ссылка, а не помнишь — описание для ИИ."""
+    query = discord.ui.TextInput(label="Название песни или ссылка", required=False, max_length=300,
+                                 placeholder="Miyagi - Minor  или  ссылка YouTube / SoundCloud / ВК")
+    describe = discord.ui.TextInput(label="Не помнишь название? Опиши песню", required=False, max_length=300,
+                                    style=discord.TextStyle.paragraph,
+                                    placeholder="строчка из песни или «грустная песня из тиктока про дождь»")
+
+    def __init__(self, cog: "Music"):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        query, describe = self.query.value.strip(), self.describe.value.strip()
+        if not query and not describe:
+            return await interaction.response.send_message("Напиши название, ссылку или опиши песню 🙂",
+                                                           ephemeral=True, delete_after=15)
+        await self.cog.request(interaction, query, describe)
 
 
 class Music(commands.Cog):
@@ -330,7 +389,7 @@ class Music(commands.Cog):
         except Exception as e:
             log.exception("Не удалось запустить трек")
             if st.channel:
-                await st.channel.send(f"⚠️ Пропускаю **{track.name}**: `{e}`")
+                self.remember(st, await st.channel.send(f"⚠️ Пропускаю **{track.name}**: `{e}`"))
             return await self.play_next(guild)
 
         st.current = track
@@ -384,7 +443,7 @@ class Music(commands.Cog):
         if vc := guild.voice_client:
             vc.stop()
             await vc.disconnect()
-        await self.close_panel(st, text)
+        await self.clear_messages(st)
 
     def set_volume(self, guild: discord.Guild, value: float):
         st = self.state(guild.id)
@@ -392,6 +451,26 @@ class Music(commands.Cog):
         vc = guild.voice_client
         if vc and isinstance(vc.source, discord.PCMVolumeTransformer):
             vc.source.volume = st.volume
+
+    @staticmethod
+    def remember(st: GuildMusic, msg):
+        """Сообщение о песне — удалим, когда бот уйдёт из канала."""
+        if msg is not None:
+            st.messages.append((msg.channel.id, msg.id))
+
+    async def clear_messages(self, st: GuildMusic):
+        """Бот ушёл: убрать панель и все его сообщения о песнях."""
+        if st.panel:
+            self.remember(st, st.panel)
+            st.panel = None
+        items, st.messages = st.messages, []
+        for channel_id, message_id in items:
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                try:
+                    await channel.get_partial_message(message_id).delete()
+                except discord.HTTPException:
+                    pass
 
     async def send_panel(self, st: GuildMusic):
         if st.panel:
@@ -401,14 +480,15 @@ class Music(commands.Cog):
                 pass
             st.panel = None
         if st.channel and st.current:
-            st.panel = await st.channel.send(embed=panel_embed(st), view=PlayerView(self, st))
+            st.panel = await st.channel.send(embeds=panel_embeds(st), view=PlayerView(self, st))
 
     async def close_panel(self, st: GuildMusic, text: str):
         if st.panel:
             try:
-                await st.panel.edit(embed=discord.Embed(description=text, colour=COLOUR), view=None)
+                await st.panel.edit(embeds=[discord.Embed(description=text, colour=COLOUR)], view=None)
             except discord.HTTPException:
                 pass
+            self.remember(st, st.panel)
             st.panel = None
 
     # ---------- команды ----------
@@ -451,6 +531,9 @@ class Music(commands.Cog):
         st.queue.extend(tracks)
         playing = vc.is_playing() or vc.is_paused()
 
+        if tracks[0].live:  # радио — без «добавлено в очередь», сразу в эфир
+            await self.reply(interaction, st, f"📻 {interaction.user.mention} включил радио **{tracks[0].name}**")
+            return self.skip_current(interaction.guild) if playing else await self.play_next(interaction.guild)
         if len(tracks) == 1 and title is None:
             embed = added_embed(tracks[0], len(st.queue) if playing else 0)
         else:
@@ -461,27 +544,67 @@ class Music(commands.Cog):
             embed.set_footer(text=f"Треков: {len(tracks)}")
             if tracks[0].thumbnail:
                 embed.set_thumbnail(url=tracks[0].thumbnail)
-        await interaction.followup.send(embed=embed)
+        self.remember(st, await interaction.followup.send(embed=embed))
         await achievements.bump(interaction.user, "tracks")
         if not playing:
             await self.play_next(interaction.guild)
+        elif st.current and st.current.live:  # играло радио — переключаемся на песню
+            self.skip_current(interaction.guild)
 
-    @app_commands.command(name="play", description="Включить песню или плейлист (название, ссылка YouTube/SoundCloud/ВК)")
-    @app_commands.describe(query="Название песни или ссылка на трек/плейлист (YouTube, SoundCloud, ВК…)")
-    @app_commands.guild_only()
-    async def play(self, interaction: discord.Interaction, query: str):
+    async def reply(self, interaction: discord.Interaction, st: GuildMusic, text: str):
+        """Ответ после defer — тоже удалится, когда бот уйдёт."""
+        self.remember(st, await interaction.followup.send(text))
+
+    async def request(self, interaction: discord.Interaction, query: str, describe: str = ""):
+        """Найти и включить: название или ссылка, а если не нашлось или есть описание — песню угадывает ИИ."""
         if not (channel := await self.precheck(interaction)):
             return
         await interaction.response.defer(thinking=True)
+        st = self.state(interaction.guild.id)
+        title, tracks, guessed = None, [], None
         try:
-            title, tracks = await asyncio.to_thread(resolve, query)
+            if query:
+                title, tracks = await asyncio.to_thread(resolve, query)
+            if not tracks and ai.ready() and not re.match(r"https?://", query):
+                guessed = await ai.guess_song(describe or query)
+                if guessed:
+                    title, tracks = await asyncio.to_thread(resolve, guessed)
         except vk_music.VKError as e:
-            return await interaction.followup.send(f"⚠️ ВК: {e}")
+            return await self.reply(interaction, st, f"⚠️ ВК: {e}")
+        except ai.AIError as e:
+            return await self.reply(interaction, st, f"😕 Ничего не нашёл, а ИИ не помог: {e}")
         except Exception as e:
-            return await interaction.followup.send(f"⚠️ Не смог открыть: `{e}`")
+            return await self.reply(interaction, st, f"⚠️ Не смог открыть: `{e}`")
         if not tracks:
-            return await interaction.followup.send(f"😕 Ничего не нашёл по запросу **{query}**")
+            return await self.reply(interaction, st, f"😕 Ничего не нашёл по запросу **{query or describe}**")
+        if guessed:
+            await self.reply(interaction, st, f"🤖 Похоже, это **{guessed}**")
         await self.enqueue(interaction, channel, tracks, title)
+
+    async def start_radio(self, interaction: discord.Interaction, index: int):
+        """Включить радиостанцию: очередь песен очищается, радио играет, пока не включат другое."""
+        if not (channel := await self.precheck(interaction)):
+            return
+        name, emoji, url = RADIO[index]
+        await interaction.response.defer(thinking=True)
+        st = self.state(interaction.guild.id)
+        st.queue.clear()
+        st.loop = "off"
+        track = Track(title=f"{emoji} {name}", page_url=None, duration=None, source="Радио", stream_url=url, live=True)
+        await self.enqueue(interaction, channel, [track], None)
+
+    @app_commands.command(name="play", description="Включить песню или плейлист (название, ссылка YouTube/SoundCloud/ВК)")
+    @app_commands.describe(query="Название, ссылка на трек/плейлист — или опиши песню, ИИ угадает")
+    @app_commands.guild_only()
+    async def play(self, interaction: discord.Interaction, query: str):
+        await self.request(interaction, query)
+
+    @app_commands.command(name="radio", description="Включить радиостанцию")
+    @app_commands.describe(station="Радиостанция из списка")
+    @app_commands.choices(station=[app_commands.Choice(name=name, value=i) for i, (name, _, _) in enumerate(RADIO)])
+    @app_commands.guild_only()
+    async def radio(self, interaction: discord.Interaction, station: app_commands.Choice[int]):
+        await self.start_radio(interaction, station.value)
 
     @app_commands.command(name="genre", description="Включить подборку по жанру: фонк, рок, рэп…")
     @app_commands.describe(genre="Жанр — выбери из списка или впиши свой", count="Сколько треков (5-50)")
@@ -494,9 +617,9 @@ class Music(commands.Cog):
         try:
             tracks = await asyncio.to_thread(search_genre, genre, count)
         except Exception as e:
-            return await interaction.followup.send(f"⚠️ Не получилось: `{e}`")
+            return await self.reply(interaction, self.state(interaction.guild.id), f"⚠️ Не получилось: `{e}`")
         if not tracks:
-            return await interaction.followup.send(f"😕 Не нашёл треков в жанре **{genre}**")
+            return await self.reply(interaction, self.state(interaction.guild.id), f"😕 Не нашёл треков в жанре **{genre}**")
         await self.enqueue(interaction, channel, tracks, genre, colour_title="🎧 Подборка")
 
     @genre.autocomplete("genre")
@@ -509,14 +632,14 @@ class Music(commands.Cog):
     async def skip(self, interaction: discord.Interaction):
         if await self.check_same(interaction):
             self.skip_current(interaction.guild)
-            await interaction.response.send_message("⏭️ Пропущено")
+            await interaction.response.send_message("⏭️ Пропущено", delete_after=10)
 
     @app_commands.command(name="stop", description="Остановить музыку и выйти из канала")
     @app_commands.guild_only()
     async def stop(self, interaction: discord.Interaction):
         if await self.check_same(interaction):
             await self.stop_all(interaction.guild, f"⏹️ Остановил {interaction.user.mention}")
-            await interaction.response.send_message("⏹️ Остановлено")
+            await interaction.response.send_message("⏹️ Остановлено", delete_after=10)
 
     @app_commands.command(name="pause", description="Пауза / продолжить")
     @app_commands.guild_only()
@@ -525,10 +648,10 @@ class Music(commands.Cog):
             vc = interaction.guild.voice_client
             if vc.is_paused():
                 vc.resume()
-                await interaction.response.send_message("▶️ Продолжаем")
+                await interaction.response.send_message("▶️ Продолжаем", delete_after=10)
             else:
                 vc.pause()
-                await interaction.response.send_message("⏸️ Пауза")
+                await interaction.response.send_message("⏸️ Пауза", delete_after=10)
 
     @app_commands.command(name="queue", description="Показать очередь")
     @app_commands.guild_only()
@@ -540,10 +663,16 @@ class Music(commands.Cog):
     async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 10, 150]):
         if await self.check_same(interaction):
             self.set_volume(interaction.guild, percent / 100)
-            await interaction.response.send_message(f"🔊 Громкость {percent}%")
+            await interaction.response.send_message(f"🔊 Громкость {percent}%", delete_after=10)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
+        if member.id == self.bot.user.id and before.channel and after.channel is None:
+            # бота отключили (выгнали из канала и т.п.) — убираем его сообщения о песнях
+            st = self.state(member.guild.id)
+            st.queue.clear()
+            st.current = None
+            return await self.clear_messages(st)
         # Если в канале с ботом никого не осталось — ждём минуту и выходим
         vc = member.guild.voice_client
         if not vc or not vc.channel or before.channel != vc.channel:

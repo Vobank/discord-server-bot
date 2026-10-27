@@ -266,6 +266,8 @@ class AddSessionModal(discord.ui.Modal, title="➕ Новый сеанс"):
                          "created_ts) VALUES (?,?,?,?,?,?,?)",
                          (g.id, self.film.value, int(start.timestamp()), self.link.value.strip(),
                           self.desc.value.strip(), event_id, created))
+        from cogs import films  # ИИ заранее найдёт описание и обложку для поста в афише
+        await films.prepare_session_film(g, self.film.value)
         announce = announce_time({"start_ts": int(start.timestamp()), "created_ts": created},
                                  parse_slots(await setting(g.id, "cinema_slots")))
         await interaction.followup.send(

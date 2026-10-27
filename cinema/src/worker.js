@@ -59,6 +59,37 @@ async function proxyVideo(req, source) {
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
+async function gemini(env, { prompt, system, search }) {
+  if (!env.GEMINI_API_KEY) return json({ error: "ИИ не подключён: нет ключа Gemini" }, 503);
+  const model = env.GEMINI_MODEL || "gemini-flash-latest";
+  const body = { contents: [{ role: "user", parts: [{ text: String(prompt || "") }] }] };
+  if (system) body.systemInstruction = { parts: [{ text: String(system) }] };
+  let error = "";
+  // с поиском Google ответы точнее, но у поиска свой лимит — кончился, пробуем без него
+  for (const withSearch of search ? [true, false] : [false]) {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+      body: JSON.stringify(withSearch ? { ...body, tools: [{ google_search: {} }] } : body),
+    });
+    const data = await r.json().catch(() => ({}));
+    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+    if (r.ok && text) return json({ text, search: withSearch });
+    error = data.error?.message || `Gemini ответил ${r.status}`;
+  }
+  return json({ error }, 502);
+}
+
+async function drawImage(env, { prompt }) {
+  try {
+    const out = await env.AI.run("@cf/black-forest-labs/flux-1-schnell", { prompt: String(prompt || "").slice(0, 2000), steps: 6 });
+    const bytes = Uint8Array.from(atob(out.image), (c) => c.charCodeAt(0));
+    return new Response(bytes, { headers: { "content-type": "image/jpeg", "cache-control": "no-store" } });
+  } catch (e) {
+    return json({ error: "Не удалось нарисовать: " + String(e.message || e) }, 502);
+  }
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -72,6 +103,20 @@ export default {
       return env.ASSETS.fetch(req);
     }
     if (path === "/api/config") return json({ clientId: env.CLIENT_ID || "" });
+
+    // ИИ для бота (только с секретом): текст — Gemini, картинки — Workers AI
+    if (path.startsWith("/api/ai/")) {
+      if (!env.KINOZAL_SECRET || req.headers.get("authorization") !== "Bearer " + env.KINOZAL_SECRET) {
+        return json({ error: "forbidden" }, 403);
+      }
+      if (path === "/api/ai/text") {
+        // из России Google не отвечает — запрос идёт через объект, который живёт в Западной Европе
+        const ai = env.ROOMS.get(env.ROOMS.idFromName("ai:gemini"), { locationHint: "weur" });
+        return ai.fetch(new Request("https://room/gemini", { method: "POST", body: await req.text() }));
+      }
+      if (path === "/api/ai/image") return drawImage(env, await req.json());
+      return json({ error: "not found" }, 404);
+    }
 
     if (path === "/api/now") {
       const channel = url.searchParams.get("channel") || "";
@@ -128,6 +173,7 @@ export class Room extends DurableObject {
 
   async fetch(req) {
     const path = new URL(req.url).pathname;
+    if (path === "/gemini") return gemini(this.env, await req.json());
     if (path === "/now") {
       if (req.method === "POST") {
         const auth = req.headers.get("authorization") || "";
