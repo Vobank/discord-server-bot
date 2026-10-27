@@ -1,6 +1,7 @@
 """Музыка: поиск по названию (YouTube → SoundCloud) или ссылка с любого сайта, который знает yt-dlp
 (YouTube, SoundCloud, VK видео, Twitch, Bandcamp и ещё 1000+). Не помнишь название — ИИ угадает песню
 по описанию или строчке (ai.py). Радиостанции — /radio или кнопка 📻.
+Подборка песен сервера (таблица song_picks) — /picks, кнопка ⭐: добавить, убрать, включить всё вперемешку.
 Управлять можно только сидя в одном голосовом канале с ботом. Панель с кнопками — в чате этого канала.
 Когда бот уходит из канала, его сообщения о песнях удаляются."""
 import asyncio
@@ -18,6 +19,7 @@ from discord import app_commands
 from discord.ext import commands
 
 import ai
+import db
 import perms
 import vk_music
 from cogs import achievements
@@ -301,7 +303,7 @@ class PlayerView(discord.ui.View):
 
     @discord.ui.button(emoji="📄", style=discord.ButtonStyle.secondary, row=0)
     async def show_queue(self, interaction: discord.Interaction, _):
-        await interaction.response.send_message(embed=queue_embed(self.st), ephemeral=True, delete_after=60)
+        await interaction.response.send_message(embed=queue_embed(self.st), ephemeral=True, delete_after=120)
 
     # --- 2 ряд ---
     @discord.ui.button(emoji="🔂", row=1)
@@ -325,6 +327,112 @@ class PlayerView(discord.ui.View):
     async def radio(self, interaction: discord.Interaction, _):
         await interaction.response.send_message("📻 Какую станцию включить?", view=RadioView(self.cog),
                                                 ephemeral=True, delete_after=120)
+
+    @discord.ui.button(emoji="⭐", style=discord.ButtonStyle.secondary, row=1)
+    async def star(self, interaction: discord.Interaction, _):
+        t = self.st.current
+        if not t or t.live or not (t.page_url or t.query):
+            return await interaction.response.send_message("Эту запись в подборку не добавить", ephemeral=True,
+                                                           delete_after=30)
+        added = await add_picks(interaction.guild.id, [t], interaction.user.id)
+        await interaction.response.send_message(f"⭐ **{t.name}** — в подборке сервера" if added else
+                                                "⭐ Эта песня уже в подборке", ephemeral=True, delete_after=30)
+
+
+# ---------- подборка песен сервера ----------
+PICK_KEYS = ("id", "title", "url", "duration", "thumbnail", "author", "added_by")
+
+
+async def picks(guild_id: int) -> list[dict]:
+    rows = await db.fetchall(f"SELECT {', '.join(PICK_KEYS)} FROM song_picks WHERE guild_id=? ORDER BY id", (guild_id,))
+    return [dict(zip(PICK_KEYS, r)) for r in rows]
+
+
+async def add_picks(guild_id: int, tracks: list[Track], user_id: int) -> int:
+    """Добавить в подборку (без повторов). Возвращает, сколько добавилось."""
+    have = {p["url"] for p in await picks(guild_id)}
+    added = 0
+    for t in tracks:
+        url = t.page_url or t.query  # у треков из ВК ссылки нет — запоминаем «исполнитель - название»
+        if url and url not in have:
+            await db.execute("INSERT INTO song_picks (guild_id, title, url, duration, thumbnail, author, added_by, "
+                             "created_at) VALUES (?,?,?,?,?,?,?,?)",
+                             (guild_id, t.name, url, t.duration, t.thumbnail, t.author, user_id, int(time.time())))
+            have.add(url)
+            added += 1
+    return added
+
+
+def pick_track(p: dict) -> Track:
+    link = p["url"].startswith("http")
+    return Track(title=p["title"], page_url=p["url"] if link else None, query=None if link else p["url"],
+                 duration=p["duration"], source="⭐ Подборка", author=p["author"], thumbnail=p["thumbnail"])
+
+
+def picks_embed(items: list[dict]) -> discord.Embed:
+    lines = [f"`{i}.` {p['title']} ({fmt_duration(p['duration'])})" for i, p in enumerate(items[:40], 1)]
+    if len(items) > 40:
+        lines.append(f"…и ещё {len(items) - 40}")
+    embed = discord.Embed(title=f"⭐ Подборка песен сервера — {len(items)}", colour=COLOUR,
+                          description="\n".join(lines) or "Пока пусто — добавь первую песню ➕")
+    embed.set_footer(text="▶️ включает всю подборку вперемешку · ⭐ в плеере добавляет песню, которая играет")
+    return embed
+
+
+class PicksView(discord.ui.View):
+    def __init__(self, cog: "Music"):
+        super().__init__(timeout=300)
+        self.cog = cog
+
+    @discord.ui.button(label="Включить всё", emoji="▶️", style=discord.ButtonStyle.success)
+    async def play_all(self, interaction: discord.Interaction, _):
+        await self.cog.play_picks(interaction)
+
+    @discord.ui.button(label="Добавить песню", emoji="➕", style=discord.ButtonStyle.primary)
+    async def add(self, interaction: discord.Interaction, _):
+        await interaction.response.send_modal(AddPickModal())
+
+    @discord.ui.button(label="Убрать", emoji="🗑️", style=discord.ButtonStyle.danger)
+    async def remove(self, interaction: discord.Interaction, _):
+        items = await picks(interaction.guild.id)
+        if not interaction.user.guild_permissions.manage_guild:
+            items = [p for p in items if p["added_by"] == interaction.user.id]
+        if not items:
+            return await interaction.response.send_message("Убирать можно только песни, которые добавил ты, а их нет",
+                                                           ephemeral=True, delete_after=30)
+        await interaction.response.send_message("🗑️ Что убрать из подборки?", view=RemovePickView(items[-25:]),
+                                                ephemeral=True, delete_after=120)
+
+
+class AddPickModal(discord.ui.Modal, title="⭐ Добавить в подборку"):
+    query = discord.ui.TextInput(label="Название песни или ссылка (можно плейлист)", max_length=300,
+                                 placeholder="Miyagi - Minor  или  ссылка YouTube / SoundCloud / ВК")
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            _, tracks = await asyncio.to_thread(resolve, self.query.value.strip())
+        except Exception as e:
+            return await interaction.followup.send(f"⚠️ Не смог открыть: `{e}`", ephemeral=True)
+        if not tracks:
+            return await interaction.followup.send("😕 Ничего не нашёл", ephemeral=True)
+        added = await add_picks(interaction.guild.id, tracks, interaction.user.id)
+        text = (f"⭐ Добавил **{tracks[0].name}**" if len(tracks) == 1 else f"⭐ Добавил песен: **{added}**") \
+            if added else "⭐ Это уже есть в подборке"
+        await interaction.followup.send(text, ephemeral=True)
+
+
+class RemovePickView(discord.ui.View):
+    def __init__(self, items: list[dict]):
+        super().__init__(timeout=120)
+        self.pick.options = [discord.SelectOption(label=p["title"][:100], value=str(p["id"])) for p in items]
+        self.pick.max_values = len(self.pick.options)
+
+    @discord.ui.select(placeholder="🗑️ Выбери песни", options=[discord.SelectOption(label="-")])
+    async def pick(self, interaction: discord.Interaction, select):
+        for pid in select.values:
+            await db.execute("DELETE FROM song_picks WHERE id=? AND guild_id=?", (int(pid), interaction.guild.id))
+        await interaction.response.edit_message(content=f"🗑️ Убрано из подборки: {len(select.values)}", view=None)
 
 
 class RadioView(discord.ui.View):
@@ -599,6 +707,30 @@ class Music(commands.Cog):
     async def play(self, interaction: discord.Interaction, query: str):
         await self.request(interaction, query)
 
+    async def show_picks(self, interaction: discord.Interaction):
+        """Кнопка ⭐ в панели комнаты и /picks: список подборки и кнопки."""
+        await interaction.response.send_message(embed=picks_embed(await picks(interaction.guild.id)),
+                                                view=PicksView(self), ephemeral=True, delete_after=300)
+
+    async def play_picks(self, interaction: discord.Interaction):
+        if not (channel := await self.precheck(interaction)):
+            return
+        items = await picks(interaction.guild.id)
+        if not items:
+            return await interaction.response.send_message("В подборке пока пусто — добавь песни ➕", ephemeral=True,
+                                                           delete_after=30)
+        await interaction.response.defer(thinking=True)
+        tracks = [pick_track(p) for p in items]
+        random.shuffle(tracks)
+        await self.enqueue(interaction, channel, tracks[:MAX_PLAYLIST], "подборка сервера",
+                           colour_title="⭐ Включена")
+
+    @app_commands.command(name="picks", description="Подборка песен сервера: включить, добавить, убрать")
+    @app_commands.guild_only()
+    async def picks_cmd(self, interaction: discord.Interaction):
+        if not await perms.deny(interaction, "music"):
+            await self.show_picks(interaction)
+
     @app_commands.command(name="radio", description="Включить радиостанцию")
     @app_commands.describe(station="Радиостанция из списка")
     @app_commands.choices(station=[app_commands.Choice(name=name, value=i) for i, (name, _, _) in enumerate(RADIO)])
@@ -632,14 +764,14 @@ class Music(commands.Cog):
     async def skip(self, interaction: discord.Interaction):
         if await self.check_same(interaction):
             self.skip_current(interaction.guild)
-            await interaction.response.send_message("⏭️ Пропущено", delete_after=10)
+            await interaction.response.send_message("⏭️ Пропущено", delete_after=30)
 
     @app_commands.command(name="stop", description="Остановить музыку и выйти из канала")
     @app_commands.guild_only()
     async def stop(self, interaction: discord.Interaction):
         if await self.check_same(interaction):
             await self.stop_all(interaction.guild, f"⏹️ Остановил {interaction.user.mention}")
-            await interaction.response.send_message("⏹️ Остановлено", delete_after=10)
+            await interaction.response.send_message("⏹️ Остановлено", delete_after=30)
 
     @app_commands.command(name="pause", description="Пауза / продолжить")
     @app_commands.guild_only()
@@ -648,10 +780,10 @@ class Music(commands.Cog):
             vc = interaction.guild.voice_client
             if vc.is_paused():
                 vc.resume()
-                await interaction.response.send_message("▶️ Продолжаем", delete_after=10)
+                await interaction.response.send_message("▶️ Продолжаем", delete_after=30)
             else:
                 vc.pause()
-                await interaction.response.send_message("⏸️ Пауза", delete_after=10)
+                await interaction.response.send_message("⏸️ Пауза", delete_after=30)
 
     @app_commands.command(name="queue", description="Показать очередь")
     @app_commands.guild_only()
@@ -663,7 +795,7 @@ class Music(commands.Cog):
     async def volume(self, interaction: discord.Interaction, percent: app_commands.Range[int, 10, 150]):
         if await self.check_same(interaction):
             self.set_volume(interaction.guild, percent / 100)
-            await interaction.response.send_message(f"🔊 Громкость {percent}%", delete_after=10)
+            await interaction.response.send_message(f"🔊 Громкость {percent}%", delete_after=30)
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):

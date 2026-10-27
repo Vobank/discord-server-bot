@@ -1,7 +1,9 @@
 """Личные голосовые: зашёл в «・Создать канал» — бот создал комнату с твоим ником, опустела — удалил.
 Каналы-создатели хранятся в таблице voice_creators (их добавляет /setup).
 Управление: панель в чате комнаты (раз в 2 минуты бот опускает её вниз) или команды /room.
-Кнопки музыки (песня, радио, очередь) — для всех, кто сидит в комнате, остальное — для хозяина."""
+Кнопки музыки (песня, радио, очередь, подборка) — для всех, кто сидит в комнате, остальное — для хозяина.
+Закрытая комната: зайти может любой, но новенький ничего не слышит, молчит и не пишет в чат, пока хозяин
+не нажмёт «Пустить» — бот сам спрашивает его в чате комнаты (таблица voice_waiting)."""
 import asyncio
 
 import discord
@@ -13,8 +15,13 @@ import db
 import perms
 
 NOT_OWNER = "🔊 Зайди в **свою** комнату (через любой «・Создать канал»), чтобы ею управлять."
-MUSIC_BUTTONS = {"room:music", "room:radio", "room:queue"}  # ими пользуются все, кто в комнате
+LOCKED_TEXT = ("🔒 Комната закрыта. Зайти может любой, но новенький ничего не слышит, не говорит и не пишет, "
+               "пока ты не пустишь. Когда кто-то зайдёт, я спрошу тебя в чате комнаты.")
+MUSIC_BUTTONS = {"room:music", "room:radio", "room:queue", "room:picks"}  # ими пользуются все, кто в комнате
 PANEL_EVERY = 2  # минуты: панель снова внизу, если в чате появились сообщения
+GONE = 60        # через сколько секунд исчезают ответы бота в комнате
+# что закрытая комната запрещает тем, кого ещё не пустили (и разрешает пущенным)
+GUEST_PERMS = ("speak", "stream", "send_messages", "read_message_history")
 
 
 async def owned_room(member: discord.Member) -> discord.VoiceChannel | None:
@@ -26,14 +33,67 @@ async def owned_room(member: discord.Member) -> discord.VoiceChannel | None:
     return None
 
 
+def is_locked(ch: discord.VoiceChannel) -> bool:
+    return ch.overwrites_for(ch.guild.default_role).speak is False
+
+
+def admitted(ch: discord.VoiceChannel, member: discord.Member) -> bool:
+    return ch.overwrites_for(member).speak is True
+
+
+async def admit(ch: discord.VoiceChannel, member: discord.Member):
+    """Пустить в закрытую комнату: слышит, говорит, пишет."""
+    ow = ch.overwrites_for(member)
+    ow.update(view_channel=True, connect=True, **{perm: True for perm in GUEST_PERMS})
+    await ch.set_permissions(member, overwrite=ow)
+
+
+async def release(member: discord.Member):
+    """Снять «ждёт у входа»: вернуть слух и убрать сообщение-вопрос. Не в голосовом — снимем, когда зайдёт."""
+    row = await db.fetchone("SELECT channel_id, msg_id FROM voice_waiting WHERE guild_id=? AND user_id=?",
+                            (member.guild.id, member.id))
+    if not row:
+        return
+    channel_id, msg_id = row
+    room = member.guild.get_channel(channel_id) if channel_id else None
+    if room and msg_id:
+        try:
+            await room.get_partial_message(msg_id).delete()
+        except discord.HTTPException:
+            pass
+    if member.voice and member.voice.channel:
+        try:
+            await member.edit(deafen=False, reason="Пустили или ушёл из закрытой комнаты")
+        except discord.HTTPException:
+            pass
+        await db.execute("DELETE FROM voice_waiting WHERE guild_id=? AND user_id=?", (member.guild.id, member.id))
+    else:
+        await db.execute("UPDATE voice_waiting SET channel_id=0, msg_id=0 WHERE guild_id=? AND user_id=?",
+                         (member.guild.id, member.id))
+
+
 async def set_locked(ch: discord.VoiceChannel, locked: bool):
+    """Закрыто: зайти может любой, но пока хозяин не пустит — ничего не слышит, молчит и не пишет.
+    Кто уже сидит в комнате, когда её закрывают, — свои."""
     targets = [t for t in ch.overwrites if isinstance(t, discord.Role)]
     if locked and ch.guild.default_role not in targets:
         targets.append(ch.guild.default_role)
     for target in targets:
         ow = ch.overwrites_for(target)
-        ow.connect = False if locked else None
-        await ch.set_permissions(target, overwrite=ow)
+        if target == ch.guild.default_role and ow.connect is False:
+            ow.connect = None  # закрыта по-старому (вход был запрещён) — теперь заходить можно
+        for perm in GUEST_PERMS:
+            setattr(ow, perm, False if locked else None)
+        await ch.set_permissions(target, overwrite=ow if not ow.is_empty() else None)
+    if locked:
+        for m in [*ch.members, ch.guild.me]:  # бот тоже свой: иначе в закрытой комнате не сможет играть музыку
+            if (not m.bot or m == ch.guild.me) and not admitted(ch, m):
+                await admit(ch, m)
+    else:
+        for (user_id,) in await db.fetchall("SELECT user_id FROM voice_waiting WHERE guild_id=? AND channel_id=?",
+                                            (ch.guild.id, ch.id)):
+            if m := ch.guild.get_member(user_id):
+                await release(m)
 
 
 async def set_hidden(ch: discord.VoiceChannel, hidden: bool):
@@ -53,7 +113,7 @@ async def set_hidden(ch: discord.VoiceChannel, hidden: bool):
 async def set_voice(ch: discord.VoiceChannel, member: discord.Member, can_speak: bool):
     """Заглушить/разглушить в ЭТОЙ комнате (в других каналах человек говорит как обычно)."""
     ow = ch.overwrites_for(member)
-    ow.speak = None if can_speak else False
+    ow.speak = (True if is_locked(ch) else None) if can_speak else False  # в закрытой «молчать» — по умолчанию
     await ch.set_permissions(member, overwrite=ow if not ow.is_empty() else None)
 
 
@@ -66,12 +126,14 @@ async def unblock(ch: discord.VoiceChannel, member: discord.Member):
 async def room_info(ch: discord.VoiceChannel) -> discord.Embed:
     row = await db.fetchone("SELECT owner_id FROM temp_voice WHERE channel_id=?", (ch.id,))
     everyone = ch.overwrites_for(ch.guild.default_role)
-    locked = everyone.connect is False
+    locked = is_locked(ch)
     hidden = everyone.view_channel is False
     trusted, blocked, muted = [], [], []
+    waiting = [f"<@{uid}>" for (uid,) in await db.fetchall(
+        "SELECT user_id FROM voice_waiting WHERE guild_id=? AND channel_id=?", (ch.guild.id, ch.id))]
     for t, ow in ch.overwrites.items():
         if isinstance(t, discord.Member) and (not row or t.id != row[0]):
-            if ow.connect is True:
+            if ow.connect is True or (locked and ow.speak is True):
                 trusted.append(t.mention)
             if ow.connect is False:
                 blocked.append(t.mention)
@@ -83,13 +145,63 @@ async def room_info(ch: discord.VoiceChannel) -> discord.Embed:
     e.add_field(name="Статус", value=("🔒 закрыта" if locked else "🔓 открыта") + " · " +
                                     ("👁️ скрыта" if hidden else "👀 видна всем"))
     e.add_field(name="✅ Пущены", value=", ".join(trusted) or "—", inline=False)
+    if locked:
+        e.add_field(name="🔔 Ждут у входа", value=", ".join(waiting) or "—", inline=False)
     e.add_field(name="⛔ Заблокированы", value=", ".join(blocked) or "—", inline=False)
     e.add_field(name="🔇 Заглушены", value=", ".join(muted) or "—", inline=False)
     return e
 
 
 async def let_in(ch: discord.VoiceChannel, member: discord.Member):
-    await ch.set_permissions(member, view_channel=True, connect=True)
+    await admit(ch, member)
+    await release(member)
+
+
+class KnockView(discord.ui.View):
+    """«🔔 Ждёт у входа» в чате закрытой комнаты: хозяин пускает или выгоняет одной кнопкой."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        room = await owned_room(interaction.user)
+        if room and room.id == interaction.channel_id:
+            return True
+        await interaction.response.send_message("🔒 Пускать в комнату может только её хозяин", ephemeral=True,
+                                                delete_after=GONE)
+        return False
+
+    @staticmethod
+    async def guest(interaction: discord.Interaction) -> discord.Member | None:
+        row = await db.fetchone("SELECT user_id FROM voice_waiting WHERE guild_id=? AND msg_id=?",
+                                (interaction.guild.id, interaction.message.id))
+        return interaction.guild.get_member(row[0]) if row else None
+
+    async def gone(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        try:
+            await interaction.message.delete()
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Пустить", emoji="✅", style=discord.ButtonStyle.success, custom_id="knock:in")
+    async def let(self, interaction: discord.Interaction, _):
+        guest = await self.guest(interaction)
+        if not guest:
+            return await self.gone(interaction)
+        await interaction.response.defer()
+        await let_in(interaction.channel, guest)
+        await interaction.channel.send(f"✅ {guest.mention} в комнате: теперь слышит всех и может говорить",
+                                       delete_after=GONE, allowed_mentions=discord.AllowedMentions.none())
+
+    @discord.ui.button(label="Выгнать", emoji="👢", style=discord.ButtonStyle.danger, custom_id="knock:out")
+    async def out(self, interaction: discord.Interaction, _):
+        guest = await self.guest(interaction)
+        if not guest:
+            return await self.gone(interaction)
+        await interaction.response.defer()
+        await kick_out(interaction.channel, guest)
+        await release(guest)
 
 
 async def kick_out(ch: discord.VoiceChannel, member: discord.Member):
@@ -116,8 +228,8 @@ class TextModal(discord.ui.Modal):
     async def on_submit(self, interaction: discord.Interaction):
         ch = await owned_room(interaction.user)
         if not ch:
-            return await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=15)
-        await interaction.response.send_message(await self.apply(ch, self.value.value), ephemeral=True, delete_after=15)
+            return await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=GONE)
+        await interaction.response.send_message(await self.apply(ch, self.value.value), ephemeral=True, delete_after=GONE)
 
 
 class PickMemberView(discord.ui.View):
@@ -130,13 +242,13 @@ class PickMemberView(discord.ui.View):
     async def pick(self, interaction: discord.Interaction, select):
         ch = await owned_room(interaction.user)
         if not ch:
-            return await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=15)
+            return await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=GONE)
         target = select.values[0]
         target = target if isinstance(target, discord.Member) else interaction.guild.get_member(target.id)
         if not target or target == interaction.user:
-            return await interaction.response.send_message("Выбери другого человека 🙂", ephemeral=True, delete_after=15)
+            return await interaction.response.send_message("Выбери другого человека 🙂", ephemeral=True, delete_after=GONE)
         await interaction.response.edit_message(content=await self.action(ch, interaction.user, target), view=None)
-        await asyncio.sleep(15)  # убираем, чтобы не копилось
+        await asyncio.sleep(GONE)  # убираем, чтобы не копилось
         try:
             await interaction.delete_original_response()
         except discord.HTTPException:
@@ -168,11 +280,11 @@ class RoomPanelView(discord.ui.View):
             if voice and voice.channel and voice.channel.id == interaction.channel_id:
                 return True
             await interaction.response.send_message("🎧 Зайди в эту комнату, чтобы включать музыку",
-                                                    ephemeral=True, delete_after=15)
+                                                    ephemeral=True, delete_after=GONE)
             return False
         if custom_id == "room:claim" or await owned_room(interaction.user):
             return True
-        await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=15)
+        await interaction.response.send_message(NOT_OWNER, ephemeral=True, delete_after=GONE)
         return False
 
     @staticmethod
@@ -189,71 +301,73 @@ class RoomPanelView(discord.ui.View):
 
     @discord.ui.button(label="Закрыть", emoji="🔒", style=discord.ButtonStyle.danger, custom_id="room:lock", row=0)
     async def lock(self, interaction, _):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await set_locked(await owned_room(interaction.user), True)
-        await interaction.response.send_message("🔒 Комната закрыта — зайдут только те, кого ты пустишь", ephemeral=True, delete_after=15)
+        await interaction.followup.send(LOCKED_TEXT, ephemeral=True)
 
     @discord.ui.button(label="Открыть", emoji="🔓", style=discord.ButtonStyle.success, custom_id="room:unlock", row=0)
     async def unlock(self, interaction, _):
+        await interaction.response.defer(ephemeral=True, thinking=True)
         await set_locked(await owned_room(interaction.user), False)
-        await interaction.response.send_message("🔓 Комната открыта для всех", ephemeral=True, delete_after=15)
+        await interaction.followup.send("🔓 Комната открыта для всех: все слышат и говорят", ephemeral=True)
 
     @discord.ui.button(label="Пустить", emoji="✅", custom_id="room:allow", row=1)
     async def allow(self, interaction, _):
         async def act(ch, me, target):
             await let_in(ch, target)
             return f"✅ {target.mention} может зайти в комнату"
-        await interaction.response.send_message(view=PickMemberView("Кого пустить?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кого пустить?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Выгнать", emoji="👢", custom_id="room:kick", row=1)
     async def kick(self, interaction, _):
         async def act(ch, me, target):
             await kick_out(ch, target)
             return f"👢 {target.mention} выгнан и больше не сможет зайти"
-        await interaction.response.send_message(view=PickMemberView("Кого выгнать?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кого выгнать?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Разблокировать", emoji="♻️", custom_id="room:unblock", row=1)
     async def unblock_btn(self, interaction, _):
         async def act(ch, me, target):
             await unblock(ch, target)
             return f"♻️ {target.mention} снова может зайти"
-        await interaction.response.send_message(view=PickMemberView("Кого разблокировать?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кого разблокировать?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Передать", emoji="👑", custom_id="room:owner", row=1)
     async def owner(self, interaction, _):
         async def act(ch, me, target):
             await transfer(ch, me, target)
             return f"👑 Теперь комнатой управляет {target.mention}"
-        await interaction.response.send_message(view=PickMemberView("Кому передать комнату?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кому передать комнату?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Скрыть", emoji="👁️", custom_id="room:hide", row=2)
     async def hide(self, interaction, _):
         await set_hidden(await owned_room(interaction.user), True)
         await interaction.response.send_message("👁️ Комната скрыта из списка — её видят только те, кто внутри "
-                                                "или кого ты пустил", ephemeral=True, delete_after=15)
+                                                "или кого ты пустил", ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Показать", emoji="👀", custom_id="room:show", row=2)
     async def show(self, interaction, _):
         await set_hidden(await owned_room(interaction.user), False)
-        await interaction.response.send_message("👀 Комната снова видна всем", ephemeral=True, delete_after=15)
+        await interaction.response.send_message("👀 Комната снова видна всем", ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Заглушить", emoji="🔇", custom_id="room:mute", row=2)
     async def mute(self, interaction, _):
         async def act(ch, me, target):
             await set_voice(ch, target, False)
             return f"🔇 {target.mention} не может говорить в твоей комнате"
-        await interaction.response.send_message(view=PickMemberView("Кого заглушить?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кого заглушить?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Разглушить", emoji="🔊", custom_id="room:unmute", row=2)
     async def unmute(self, interaction, _):
         async def act(ch, me, target):
             await set_voice(ch, target, True)
             return f"🔊 {target.mention} снова может говорить"
-        await interaction.response.send_message(view=PickMemberView("Кого разглушить?", act), ephemeral=True, delete_after=15)
+        await interaction.response.send_message(view=PickMemberView("Кого разглушить?", act), ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Инфо", emoji="ℹ️", custom_id="room:info", row=3)
     async def info(self, interaction, _):
         await interaction.response.send_message(embed=await room_info(await owned_room(interaction.user)),
-                                                ephemeral=True, delete_after=60)
+                                                ephemeral=True, delete_after=2 * GONE)
 
     @discord.ui.button(label="Забрать комнату", emoji="🙋", style=discord.ButtonStyle.primary, custom_id="room:claim",
                        row=3)
@@ -262,12 +376,12 @@ class RoomPanelView(discord.ui.View):
         ch = voice.channel if voice else None
         row = ch and await db.fetchone("SELECT owner_id FROM temp_voice WHERE channel_id=?", (ch.id,))
         if not row:
-            return await interaction.response.send_message("🔊 Зайди в чью-то личную комнату", ephemeral=True, delete_after=15)
+            return await interaction.response.send_message("🔊 Зайди в чью-то личную комнату", ephemeral=True, delete_after=GONE)
         if row[0] == interaction.user.id:
-            return await interaction.response.send_message("Это и так твоя комната 🙂", ephemeral=True, delete_after=15)
+            return await interaction.response.send_message("Это и так твоя комната 🙂", ephemeral=True, delete_after=GONE)
         if any(m.id == row[0] for m in ch.members):
             return await interaction.response.send_message("Хозяин ещё в комнате — попроси его передать её тебе",
-                                                           ephemeral=True, delete_after=15)
+                                                           ephemeral=True, delete_after=GONE)
         old = ch.guild.get_member(row[0])
         if old:
             await transfer(ch, old, interaction.user)
@@ -275,7 +389,9 @@ class RoomPanelView(discord.ui.View):
             await db.execute("UPDATE temp_voice SET owner_id=? WHERE channel_id=?", (interaction.user.id, ch.id))
             await ch.set_permissions(interaction.user, view_channel=True, connect=True, speak=True,
                                      manage_channels=True, move_members=True, mute_members=True)
-        await interaction.response.send_message(f"🙋 Хозяин ушёл — теперь {ch.mention} твоя", ephemeral=True, delete_after=15)
+        if is_locked(ch):
+            await admit(ch, interaction.user)
+        await interaction.response.send_message(f"🙋 Хозяин ушёл — теперь {ch.mention} твоя", ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Музыка", emoji="🎵", style=discord.ButtonStyle.success, custom_id="room:music", row=4)
     async def music_btn(self, interaction, _):
@@ -292,7 +408,11 @@ class RoomPanelView(discord.ui.View):
     async def queue_btn(self, interaction, _):
         from cogs.music import queue_embed
         st = self.music(interaction).state(interaction.guild.id)
-        await interaction.response.send_message(embed=queue_embed(st), ephemeral=True, delete_after=60)
+        await interaction.response.send_message(embed=queue_embed(st), ephemeral=True, delete_after=120)
+
+    @discord.ui.button(label="Подборка", emoji="⭐", custom_id="room:picks", row=4)
+    async def picks_btn(self, interaction, _):
+        await self.music(interaction).show_picks(interaction)
 
 
 def panel_embed(owner: discord.Member) -> discord.Embed:
@@ -301,14 +421,16 @@ def panel_embed(owner: discord.Member) -> discord.Embed:
         description=(
             f"{owner.mention}, это твоя комната. Когда все выйдут, она удалится сама.\n\n"
             "✏️ **Название** · 👥 **Лимит** людей\n"
-            "🔒 **Закрыть** — зайдут только те, кого ты пустишь · 🔓 **Открыть** для всех\n"
+            "🔒 **Закрыть** — зайти может любой, но ничего не слышит и молчит, пока ты не пустишь · "
+            "🔓 **Открыть** для всех\n"
             "✅ **Пустить** · 👢 **Выгнать** и запретить вход · ♻️ **Разблокировать**\n"
             "👑 **Передать** комнату другому\n"
             "👁️ **Скрыть** из списка каналов · 👀 **Показать**\n"
             "🔇 **Заглушить** / 🔊 **Разглушить** человека — только в твоей комнате\n"
             "ℹ️ **Инфо** — кто пущен, заблокирован, заглушен\n"
             "🙋 **Забрать комнату** — если хозяин ушёл, а ты остался\n\n"
-            "🎵 **Музыка** — название, ссылка или опиши песню, ИИ угадает · 📻 **Радио** · 📄 **Очередь**\n\n"
+            "🎵 **Музыка** — название, ссылка или опиши песню, ИИ угадает · 📻 **Радио** · 📄 **Очередь** · "
+            "⭐ **Подборка** песен сервера\n\n"
             "Музыку включает любой, кто в комнате, остальными кнопками пользуется хозяин. "
             "Ответы бота видишь только ты, и они исчезают сами."
         ),
@@ -338,6 +460,7 @@ class VoiceRooms(commands.Cog):
         self.bot = bot
         self.panels: dict[int, int] = {}  # комната → сообщение с панелью
         bot.add_view(RoomPanelView())
+        bot.add_view(KnockView())
         self.keep_panels_low.start()
 
     def cog_unload(self):
@@ -395,11 +518,39 @@ class VoiceRooms(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
-        if after.channel and after.channel != before.channel and await db.fetchone(
-                "SELECT 1 FROM voice_creators WHERE channel_id=?", (after.channel.id,)):
+        if before.channel == after.channel:
+            return
+        waiting = await db.fetchone("SELECT channel_id FROM voice_waiting WHERE guild_id=? AND user_id=?",
+                                    (member.guild.id, member.id))
+        if waiting and (after.channel is None or waiting[0] != after.channel.id):
+            await release(member)  # ушёл от двери закрытой комнаты — снова всё слышит
+        if after.channel and await db.fetchone("SELECT 1 FROM voice_creators WHERE channel_id=?", (after.channel.id,)):
             await self.create_room(member, after.channel)
-        if before.channel and before.channel != after.channel:
+        elif after.channel:
+            await self.at_door(member, after.channel)
+        if before.channel:
             await self.cleanup(before.channel)
+
+    async def at_door(self, member: discord.Member, room):
+        """Зашёл в закрытую комнату и его ещё не пускали: ничего не слышит и молчит, хозяина спрашиваем в чате."""
+        if member.bot or not isinstance(room, discord.VoiceChannel) or not is_locked(room):
+            return
+        row = await db.fetchone("SELECT owner_id FROM temp_voice WHERE channel_id=?", (room.id,))
+        if not row or row[0] == member.id or admitted(room, member) or member.guild_permissions.administrator:
+            return
+        try:
+            await member.edit(deafen=True, reason="Ждёт у входа в закрытую комнату")
+        except discord.HTTPException:
+            pass
+        knock = None
+        try:
+            knock = await room.send(f"🔔 {member.mention} ждёт у входа: пока ничего не слышит и не может говорить. "
+                                    f"<@{row[0]}>, пустить?", view=KnockView(),
+                                    allowed_mentions=discord.AllowedMentions(users=[discord.Object(row[0])]))
+        except discord.HTTPException:
+            pass
+        await db.execute("INSERT OR REPLACE INTO voice_waiting (guild_id, user_id, channel_id, msg_id) VALUES (?,?,?,?)",
+                         (member.guild.id, member.id, room.id, knock.id if knock else 0))
 
     async def create_room(self, member: discord.Member, creator: discord.VoiceChannel):
         if member.bot:
@@ -452,7 +603,7 @@ class VoiceRooms(commands.Cog):
     async def room_panel(self, interaction: discord.Interaction):
         if ch := await self.own_room(interaction):
             await self.send_panel(ch, interaction.user)
-            await interaction.response.send_message(f"✅ Панель в чате {ch.mention}", ephemeral=True, delete_after=15)
+            await interaction.response.send_message(f"✅ Панель в чате {ch.mention}", ephemeral=True, delete_after=GONE)
 
     @room.command(name="name", description="Переименовать свою комнату")
     async def room_name(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 90]):
@@ -464,17 +615,19 @@ class VoiceRooms(commands.Cog):
         if ch := await self.own_room(interaction):
             await interaction.response.send_message(await limit(ch, str(count)), ephemeral=True)
 
-    @room.command(name="lock", description="Закрыть комнату — зайти смогут только приглашённые")
+    @room.command(name="lock", description="Закрыть комнату — новенькие молчат и не слышат, пока не пустишь")
     async def room_lock(self, interaction: discord.Interaction):
         if ch := await self.own_room(interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await set_locked(ch, True)
-            await interaction.response.send_message("🔒 Комната закрыта. Пустить: `/room invite`", ephemeral=True)
+            await interaction.followup.send(LOCKED_TEXT + " Пустить заранее: `/room invite`", ephemeral=True)
 
     @room.command(name="unlock", description="Открыть комнату для всех")
     async def room_unlock(self, interaction: discord.Interaction):
         if ch := await self.own_room(interaction):
+            await interaction.response.defer(ephemeral=True, thinking=True)
             await set_locked(ch, False)
-            await interaction.response.send_message("🔓 Комната открыта", ephemeral=True)
+            await interaction.followup.send("🔓 Комната открыта", ephemeral=True)
 
     @room.command(name="invite", description="Разрешить человеку зайти в закрытую комнату")
     async def room_invite(self, interaction: discord.Interaction, member: discord.Member):

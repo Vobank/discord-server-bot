@@ -70,6 +70,15 @@ CREATE TABLE IF NOT EXISTS temp_voice (
     channel_id INTEGER PRIMARY KEY,
     owner_id INTEGER
 );
+CREATE TABLE IF NOT EXISTS voice_waiting (
+    guild_id INTEGER, user_id INTEGER, channel_id INTEGER, msg_id INTEGER,
+    PRIMARY KEY (guild_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS song_picks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER, title TEXT, url TEXT, duration INTEGER, thumbnail TEXT, author TEXT,
+    added_by INTEGER, created_at INTEGER
+);
 """
 
 _conn: aiosqlite.Connection | None = None
