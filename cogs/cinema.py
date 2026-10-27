@@ -41,6 +41,18 @@ async def kinozal_set(voice: discord.VoiceChannel, url: str, title: str) -> bool
         return False
 
 
+def kinozal_web(voice: discord.VoiceChannel) -> str:
+    """Тот же кинозал в обычном браузере: работает на любом сервере, без проверки приложения в Discord.
+    Комната — по каналу, поэтому зрители в браузере и в Discord смотрят вместе."""
+    return f"{KINOZAL_URL}/?room=ch-{voice.id}&channel={voice.id}"
+
+
+def kinozal_buttons(view: discord.ui.View, voice: discord.VoiceChannel, invite: str | None):
+    if invite:
+        view.add_item(discord.ui.Button(label="Смотреть в Discord", emoji="🍿", url=invite))
+    view.add_item(discord.ui.Button(label="Смотреть в браузере", emoji="🌐", url=kinozal_web(voice)))
+
+
 async def kinozal_invite(bot: commands.Bot, voice: discord.VoiceChannel) -> str | None:
     """Ссылка, по которой кинозал открывается прямо в голосовом канале."""
     try:
@@ -498,8 +510,8 @@ class Cinema(commands.Cog):
         in_kinozal = False
         if voice and kinozal_ready() and link.startswith("http") and not YOUTUBE.search(link):
             # видеофайл или Яндекс Диск — показываем в своём кинозале прямо в Discord
-            if await kinozal_set(voice, link, s["title"]) and (url := await kinozal_invite(self.bot, voice)):
-                view.add_item(discord.ui.Button(label="Смотреть в кинозале", emoji="🍿", url=url))
+            if await kinozal_set(voice, link, s["title"]):
+                kinozal_buttons(view, voice, await kinozal_invite(self.bot, voice))
                 in_kinozal = True
         if voice and not in_kinozal:
             try:
@@ -539,13 +551,12 @@ class Cinema(commands.Cog):
                 "Нужна ссылка на видеофайл или Яндекс Диск. YouTube открывай через «Смотрим вместе».", ephemeral=True)
         await interaction.response.defer(thinking=True)
         name = title or link.split("?")[0].rstrip("/").split("/")[-1]
-        url = await kinozal_invite(self.bot, voice) if await kinozal_set(voice, link, name) else None
-        if not url:
+        if not await kinozal_set(voice, link, name):
             return await interaction.followup.send("⚠️ Кинозал не ответил. Попробуй ещё раз через минуту.")
         view = discord.ui.View()
-        view.add_item(discord.ui.Button(label="Смотреть в кинозале", emoji="🍿", url=url))
-        await interaction.followup.send(f"🍿 **{name}** — в {voice.mention}. Жми кнопку, фильм откроется прямо в Discord.",
-                                        view=view)
+        kinozal_buttons(view, voice, await kinozal_invite(self.bot, voice))
+        await interaction.followup.send(f"🍿 **{name}** — в {voice.mention}. Пауза и перемотка — у всех сразу, "
+                                        "и в Discord, и в браузере.", view=view)
 
     @ticker.before_loop
     async def before(self):

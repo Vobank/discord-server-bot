@@ -140,8 +140,9 @@ async function start() {
       const cfg = await (await fetch(`${P}/api/config`)).json();
       const sdk = new DiscordSDK(cfg.clientId);
       await sdk.ready();
-      room = sdk.instanceId || room;
       channel = sdk.channelId || channel;
+      // комната по голосовому каналу — та же, что у кнопки «Смотреть в браузере»
+      room = channel ? `ch-${channel}` : sdk.instanceId || room;
     } catch (e) {
       showError("Не удалось подключиться к Discord. Закройте и откройте кинозал снова.");
     }
