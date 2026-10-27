@@ -63,6 +63,8 @@ async def kinozal_invite(bot: commands.Bot, voice: discord.VoiceChannel) -> str 
         log.exception("Не удалось открыть кинозал — включены ли Activities у приложения бота?")
         return None
 log = logging.getLogger("cinema")
+GONE = 30        # через сколько секунд исчезают ответы бота
+MENU_GONE = 300  # меню, списки и предпросмотр — дольше, чтобы успеть выбрать
 DEFAULTS = {
     "cinema_slots": "10:00,13:00,18:00",  # анонс — в ближайшее из этих времён после добавления сеанса
     "cinema_reminders": "60,10",
@@ -202,18 +204,18 @@ class AfishaView(discord.ui.View):
         role = discord.utils.get(interaction.guild.roles, name=config.ROLE_CINEMA)
         if not role:
             return await interaction.response.send_message("Роль не найдена — админ должен запустить /setup",
-                                                           ephemeral=True)
+                                                           ephemeral=True, delete_after=GONE)
         if role in interaction.user.roles:
             await interaction.user.remove_roles(role, reason="Отписался от кино")
             text = "🔕 Больше не буду звать тебя на кино"
         else:
             await interaction.user.add_roles(role, reason="Подписался на кино")
             text = "🔔 Готово! Напомню перед каждым сеансом 🍿"
-        await interaction.response.send_message(text, ephemeral=True)
+        await interaction.response.send_message(text, ephemeral=True, delete_after=GONE)
 
     @discord.ui.button(label="Расписание", emoji="📅", custom_id="cinema:schedule")
     async def schedule(self, interaction: discord.Interaction, _):
-        await interaction.response.send_message(embed=await schedule_embed(interaction.guild), ephemeral=True)
+        await interaction.response.send_message(embed=await schedule_embed(interaction.guild), ephemeral=True, delete_after=MENU_GONE)
 
     @discord.ui.button(label="Подборка", emoji="🍿", custom_id="cinema:wishlist")
     async def wishlist(self, interaction: discord.Interaction, _):
@@ -222,7 +224,7 @@ class AfishaView(discord.ui.View):
         ch = discord.utils.get(g.text_channels, name=config.CH_CINEMA_WISHLIST)
         await interaction.response.send_message(
             f"Предложить фильм можно в {ch.mention if ch else 'подборке'} 👇",
-            embeds=films.list_embeds(await films.films(g.id), [])[:5], ephemeral=True)
+            embeds=films.list_embeds(await films.films(g.id), [])[:5], ephemeral=True, delete_after=MENU_GONE)
 
 
 async def schedule_embed(guild: discord.Guild) -> discord.Embed:
@@ -246,7 +248,7 @@ class AddSessionModal(discord.ui.Modal, title="➕ Новый сеанс"):
         try:
             start = parse_start(self.date.value, self.time.value)
         except ValueError as e:
-            return await interaction.response.send_message(f"⚠️ {e}", ephemeral=True)
+            return await interaction.response.send_message(f"⚠️ {e}", ephemeral=True, delete_after=GONE)
         await interaction.response.defer(ephemeral=True, thinking=True)
         g = interaction.guild
         _, voice, _ = channels(g)
@@ -270,10 +272,9 @@ class AddSessionModal(discord.ui.Modal, title="➕ Новый сеанс"):
         await films.prepare_session_film(g, self.film.value)
         announce = announce_time({"start_ts": int(start.timestamp()), "created_ts": created},
                                  parse_slots(await setting(g.id, "cinema_slots")))
-        await interaction.followup.send(
-            f"✅ Сеанс **{self.film.value}** — <t:{int(start.timestamp())}:F>"
-            f"\n📣 Анонс в афише: <t:{int(announce.timestamp())}:F>"
-            + ("\n📅 Событие создано во вкладке «Мероприятия»" if event_id else ""), ephemeral=True)
+        await films.done(interaction, f"✅ Сеанс **{self.film.value}** — <t:{int(start.timestamp())}:F>"
+                         f"\n📣 Анонс в афише: <t:{int(announce.timestamp())}:F>"
+                         + ("\n📅 Событие создано во вкладке «Мероприятия»" if event_id else ""), 60)
         from cogs.admin_panel import log_action
         await log_action(g, f"🎬 {interaction.user.mention} добавил сеанс **{self.film.value}** "
                             f"на <t:{int(start.timestamp())}:F>")
@@ -312,7 +313,7 @@ class TextModal(discord.ui.Modal):
 
     async def on_submit(self, interaction: discord.Interaction):
         await db.set_setting(interaction.guild.id, self.key, self.text.value)
-        await interaction.response.send_message(f"✅ Текст «{TEXT_KEYS[self.key]}» сохранён", ephemeral=True)
+        await interaction.response.send_message(f"✅ Текст «{TEXT_KEYS[self.key]}» сохранён", ephemeral=True, delete_after=GONE)
 
 
 class TextPickView(discord.ui.View):
@@ -327,7 +328,7 @@ class TextPickView(discord.ui.View):
         if key == "reset":
             for k in TEXT_KEYS:
                 await db.set_setting(interaction.guild.id, k, DEFAULTS[k])
-            return await interaction.response.send_message("↩️ Тексты сброшены", ephemeral=True)
+            return await interaction.response.send_message("↩️ Тексты сброшены", ephemeral=True, delete_after=GONE)
         await interaction.response.send_modal(TextModal(key, await setting(interaction.guild.id, key)))
 
 
@@ -343,16 +344,16 @@ class TimesModal(discord.ui.Modal, title="⏰ Время анонсов"):
         try:
             slots_text = ",".join(f"{h:02}:{m:02}" for h, m in parse_slots(self.slots.value))
         except ValueError:
-            return await interaction.response.send_message("⚠️ Время пиши так: 10:00,13:00,18:00", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Время пиши так: 10:00,13:00,18:00", ephemeral=True, delete_after=GONE)
         try:
             mins = sorted({int(x) for x in self.reminders.value.replace(" ", "").split(",") if x}, reverse=True)
         except ValueError:
-            return await interaction.response.send_message("⚠️ Минуты пиши так: 60,10", ephemeral=True)
+            return await interaction.response.send_message("⚠️ Минуты пиши так: 60,10", ephemeral=True, delete_after=GONE)
         await db.set_setting(interaction.guild.id, "cinema_slots", slots_text)
         await db.set_setting(interaction.guild.id, "cinema_reminders", ",".join(map(str, mins)))
         await interaction.response.send_message(
             f"✅ Анонсы в **{slots_text.replace(',', ', ')}**, напоминания за "
-            f"**{', '.join(fmt_left(m) for m in mins) or 'не присылать'}**", ephemeral=True)
+            f"**{', '.join(fmt_left(m) for m in mins) or 'не присылать'}**", ephemeral=True, delete_after=GONE)
 
 
 class CinemaPanelView(discord.ui.View):
@@ -377,7 +378,7 @@ class CinemaPanelView(discord.ui.View):
     async def texts(self, interaction, _):
         await interaction.response.send_message(
             embed=discord.Embed(title="✏️ Тексты бота", description=f"Можно вставлять:\n{PLACEHOLDERS}", colour=COLOUR),
-            view=TextPickView(), ephemeral=True)
+            view=TextPickView(), ephemeral=True, delete_after=MENU_GONE)
 
     @discord.ui.button(label="Время", emoji="⏰", custom_id="cin:times")
     async def times(self, interaction, _):
@@ -394,7 +395,7 @@ class CinemaPanelView(discord.ui.View):
         embeds = [discord.Embed(title=TEXT_KEYS[k], description=await render(g, k, s, 10), colour=COLOUR)
                   for k in TEXT_KEYS]
         await interaction.response.send_message("Так будут выглядеть сообщения" +
-                                                ("" if items else " (на примере)") + ":", embeds=embeds, ephemeral=True)
+                                                ("" if items else " (на примере)") + ":", embeds=embeds, ephemeral=True, delete_after=MENU_GONE)
 
     @discord.ui.button(label="Голосование", emoji="🗳️", style=discord.ButtonStyle.primary, custom_id="cin:vote", row=1)
     async def vote(self, interaction, _):
@@ -607,13 +608,13 @@ class Cinema(commands.Cog):
     async def kinozal(self, interaction: discord.Interaction, link: str, title: str | None = None):
         if not kinozal_ready():
             return await interaction.response.send_message(
-                "Кинозал ещё не подключён: нужен адрес сайта кинозала в настройках бота.", ephemeral=True)
+                "Кинозал ещё не подключён: нужен адрес сайта кинозала в настройках бота.", ephemeral=True, delete_after=GONE)
         voice = interaction.user.voice.channel if interaction.user.voice else channels(interaction.guild)[1]
         if voice is None:
-            return await interaction.response.send_message("Зайди в голосовой канал, где будете смотреть.", ephemeral=True)
+            return await interaction.response.send_message("Зайди в голосовой канал, где будете смотреть.", ephemeral=True, delete_after=GONE)
         if not link.startswith("http") or YOUTUBE.search(link):
             return await interaction.response.send_message(
-                "Нужна ссылка на видеофайл или Яндекс Диск. YouTube открывай через «Смотрим вместе».", ephemeral=True)
+                "Нужна ссылка на видеофайл или Яндекс Диск. YouTube открывай через «Смотрим вместе».", ephemeral=True, delete_after=GONE)
         await interaction.response.defer(thinking=True)
         name = title or link.split("?")[0].rstrip("/").split("/")[-1]
         if not await kinozal_set(voice, link, name):

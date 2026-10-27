@@ -43,7 +43,7 @@ LEGACY = {
 GENRES = {**TYPES, **LEGACY}
 POPULAR_TOP = 5
 GONE = 15        # через сколько секунд исчезают ответы бота
-MENU_GONE = 180  # меню и списки — дольше, чтобы успеть выбрать
+MENU_GONE = 300  # меню и списки — дольше, чтобы успеть выбрать
 FIELDS = "id, title, count, suggested_by, watched_before, watched_at, genre, genres, year, country, duration, " \
          "description, poster, card_msg, author_id, status, episodes_total, episodes_watched"
 SERIALS = {"series", "cartoon_series", "anime"}  # у них считаем серии
@@ -687,7 +687,7 @@ class VoteSetupView(discord.ui.View):
 
     async def launch(self, interaction: discord.Interaction, chosen: list[dict]):
         if not chosen:
-            return await interaction.response.send_message("Выбери фильмы 👆", ephemeral=True)
+            return await interaction.response.send_message("Выбери фильмы 👆", ephemeral=True, delete_after=GONE)
         g = interaction.guild
         afisha = discord.utils.get(g.text_channels, name=config.CH_CINEMA_AFISHA)
         role = discord.utils.get(g.roles, name=config.ROLE_CINEMA)
@@ -753,21 +753,21 @@ class ManageView(discord.ui.View):
 async def open_vote(interaction: discord.Interaction):
     items = await films(interaction.guild.id)
     if not items:
-        return await interaction.response.send_message("В подборке пока нет фильмов", ephemeral=True)
+        return await interaction.response.send_message("В подборке пока нет фильмов", ephemeral=True, delete_after=GONE)
     await interaction.response.send_message(
         embed=discord.Embed(title="🗳️ Голосование за фильм", colour=COLOUR,
                             description="Можно выбрать **тип** (например, только аниме). "
                                         "Выбери до 5 фильмов вручную и нажми **Запустить** — или сразу "
                                         "**🔝 Топ-5** (больше всего 👍) / **🎲 Случайные 5**.\n"
                                         "Опрос появится в 🎬・афиша с пингом 🍿 Киноманов."),
-        view=VoteSetupView(items), ephemeral=True)
+        view=VoteSetupView(items), ephemeral=True, delete_after=MENU_GONE)
 
 
 async def open_manage(interaction: discord.Interaction, mode: str):
     items = await films(interaction.guild.id)
     if not items:
-        return await interaction.response.send_message("В подборке пока нет фильмов", ephemeral=True)
-    await interaction.response.send_message(view=ManageView(items, mode), ephemeral=True)
+        return await interaction.response.send_message("В подборке пока нет фильмов", ephemeral=True, delete_after=GONE)
+    await interaction.response.send_message(view=ManageView(items, mode), ephemeral=True, delete_after=MENU_GONE)
 
 
 class Films(commands.Cog):
