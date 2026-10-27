@@ -59,25 +59,53 @@ async function proxyVideo(req, source) {
   return new Response(upstream.body, { status: upstream.status, headers: out });
 }
 
-async function gemini(env, { prompt, system, search }) {
+const MODEL_PAUSE = 5 * 60 * 1000;   // модель занята или кончился её лимит — не трогаем 5 минут
+const SEARCH_PAUSE = 60 * 60 * 1000; // поиск Google недоступен (на бесплатном ключе его нет) — час без поиска
+const GEMINI_WAIT = 25 * 1000;       // дольше не ждём одну модель — переходим к следующей
+
+// memo — память объекта ai:gemini между запросами: какие модели и поиск сейчас не отвечают
+async function gemini(env, { prompt, system, search }, memo) {
   if (!env.GEMINI_API_KEY) return json({ error: "ИИ не подключён: нет ключа Gemini" }, 503);
-  const model = env.GEMINI_MODEL || "gemini-flash-latest";
+  const now = Date.now();
+  memo.paused ||= {};
+  // модели по очереди: занята или кончился лимит — следующая; если на паузе все — пробуем всё равно
+  const all = (env.GEMINI_MODEL || "gemini-flash-latest").split(",").map((m) => m.trim()).filter(Boolean);
+  const ready = all.filter((m) => !(memo.paused[m] > now));
   const body = { contents: [{ role: "user", parts: [{ text: String(prompt || "") }] }] };
   if (system) body.systemInstruction = { parts: [{ text: String(system) }] };
   let error = "";
-  // с поиском Google ответы точнее, но у поиска свой лимит — кончился, пробуем без него
-  for (const withSearch of search ? [true, false] : [false]) {
-    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
-      method: "POST",
-      headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
-      body: JSON.stringify(withSearch ? { ...body, tools: [{ google_search: {} }] } : body),
-    });
-    const data = await r.json().catch(() => ({}));
-    const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
-    if (r.ok && text) return json({ text, search: withSearch });
-    error = data.error?.message || `Gemini ответил ${r.status}`;
+  for (const model of ready.length ? ready : all) {
+    // с поиском Google ответы точнее, но он есть не на всех ключах — нет, пробуем без него
+    for (const withSearch of search && !(memo.noSearch > now) ? [true, false] : [false]) {
+      let r, data;
+      try {
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+          method: "POST",
+          headers: { "content-type": "application/json", "x-goog-api-key": env.GEMINI_API_KEY },
+          body: JSON.stringify(withSearch ? { ...body, tools: [{ google_search: {} }] } : body),
+          signal: AbortSignal.timeout(GEMINI_WAIT),
+        });
+        data = await r.json().catch(() => ({}));
+      } catch (e) {
+        error = "долго не отвечает";
+        memo.paused[model] = Date.now() + MODEL_PAUSE;
+        break;
+      }
+      const text = (data.candidates?.[0]?.content?.parts || []).map((p) => p.text || "").join("").trim();
+      if (r.ok && text) return json({ text, model, search: withSearch });
+      error = data.error?.message || `Gemini ответил ${r.status}`;
+      if ([401, 403].includes(r.status)) return json({ error: "Ключ Gemini не подошёл: " + error }, 502);
+      if (withSearch) {
+        if (r.status === 429) memo.noSearch = Date.now() + SEARCH_PAUSE;
+        continue; // та же модель без поиска
+      }
+      if ([404, 429, 500, 503].includes(r.status)) {
+        memo.paused[model] = Date.now() + MODEL_PAUSE;
+        break;
+      }
+    }
   }
-  return json({ error }, 502);
+  return json({ error: "Gemini сейчас не отвечает: " + error }, 502);
 }
 
 async function drawImage(env, { prompt }) {
@@ -173,7 +201,7 @@ export class Room extends DurableObject {
 
   async fetch(req) {
     const path = new URL(req.url).pathname;
-    if (path === "/gemini") return gemini(this.env, await req.json());
+    if (path === "/gemini") return gemini(this.env, await req.json(), (this.memo ||= {}));
     if (path === "/now") {
       if (req.method === "POST") {
         const auth = req.headers.get("authorization") || "";

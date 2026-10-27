@@ -23,5 +23,5 @@ binding = "AI"
 [vars]
 # ID приложения бота (Developer Portal → General Information → Application ID)
 CLIENT_ID = ""
-# модель Gemini для текста; ключ — секрет: npx wrangler secret put GEMINI_API_KEY
-GEMINI_MODEL = "gemini-flash-latest"
+# модели Gemini для текста — по очереди, если первая занята; ключ — секрет: npx wrangler secret put GEMINI_API_KEY
+GEMINI_MODEL = "gemini-3-flash-preview,gemini-flash-latest,gemini-flash-lite-latest"
