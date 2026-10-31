@@ -515,6 +515,10 @@ class Cinema(commands.Cog):
         if task == "cinema_fresh_start":
             for guild in self.bot.guilds:
                 await fresh_start(self.bot, guild)
+        elif task == "reonboard":  # «все заново» — анкета для всех, кроме администрации
+            from cogs.onboarding import reonboard_all
+            for guild in self.bot.guilds:
+                await reonboard_all(guild)
 
     @tasks.loop(seconds=30)
     async def ticker(self):

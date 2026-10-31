@@ -321,6 +321,30 @@ async def reset_member(member: discord.Member) -> bool:
     return True
 
 
+async def reonboard_all(guild: discord.Guild, progress=None) -> int:
+    """«Все заново» для всего сервера: закрыть 🔒 и написать каждому в ЛС. progress(i, всего) — для отчёта."""
+    members = [m for m in guild.members if not exempt(m) and not is_pending(m)]
+    channel = discord.utils.get(guild.text_channels, name=config.CH_WELCOME)
+    done = 0
+    for i, member in enumerate(members, 1):
+        try:
+            if await reset_member(member):
+                done += 1
+                try:
+                    await member.send(
+                        f"👋 Привет! На **{guild.name}** обновилась анкета. Чтобы снова открыть все "
+                        f"каналы, зайди в {channel.mention if channel else '#старт'}, нажми **📝 Заполнить анкету** "
+                        "и выбери возраст и игры — это меньше минуты.")
+                except discord.HTTPException:
+                    pass
+        except discord.HTTPException:
+            log.exception("Все заново: не получилось для %s", member)
+        if progress and i % 20 == 0:
+            await progress(i, len(members))
+    log.info("Все заново: %d человек снова проходят анкету", done)
+    return done
+
+
 class ReonboardConfirm(discord.ui.View):
     def __init__(self, members: list[discord.Member]):
         super().__init__(timeout=300)
@@ -331,22 +355,10 @@ class ReonboardConfirm(discord.ui.View):
         await interaction.response.edit_message(content=f"⏳ Закрываю сервер для {len(self.members)} человек…",
                                                 view=None)
         channel = discord.utils.get(interaction.guild.text_channels, name=config.CH_WELCOME)
-        done = 0
-        for i, member in enumerate(self.members, 1):
-            try:
-                if await reset_member(member):
-                    done += 1
-                    try:
-                        await member.send(
-                            f"👋 Привет! На **{interaction.guild.name}** обновилась анкета. Чтобы снова открыть все "
-                            f"каналы, зайди в {channel.mention if channel else '#старт'}, нажми **📝 Заполнить анкету** "
-                            "и выбери возраст и игры — это меньше минуты.")
-                    except discord.HTTPException:
-                        pass
-            except discord.HTTPException:
-                log.exception("Все заново: не получилось для %s", member)
-            if i % 20 == 0:
-                await interaction.edit_original_response(content=f"⏳ {i} из {len(self.members)}…")
+
+        async def progress(i, total):
+            await interaction.edit_original_response(content=f"⏳ {i} из {total}…")
+        done = await reonboard_all(interaction.guild, progress)
         await interaction.edit_original_response(
             content=f"✅ Готово: {done} человек снова проходят анкету в {channel.mention if channel else '#старт'}. "
                     "Каждому написал в ЛС (у кого открыты).")
