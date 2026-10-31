@@ -78,9 +78,14 @@ async def hide(member: discord.Member, role: discord.Role) -> str:
         await db.execute("INSERT INTO ghost_backup (guild_id, user_id, roles, nick) VALUES (?,?,?,?)",
                          (guild.id, member.id, ",".join(map(str, saved)), member.nick or ""))
     keep = [r for r in member.roles if r.managed]  # роли бустера и т.п. снять нельзя
-    # маскировка: в списке участников стоит среди обычных людей в группе 👻 (там большинство участников)
-    camo = discord.utils.get(guild.roles, name=config.ROLE_BASE)
-    want = [role, *keep, *([camo] if camo and camo < guild.me.top_role else [])]
+    # маскировка: как у обычного участника после анкеты — 👻 и свой пол (♂️/♀️ из сохранённых ролей),
+    # тогда в списке участников невидимка стоит среди людей своей группы, а не один
+    (saved,) = await db.fetchone("SELECT roles FROM ghost_backup WHERE guild_id=? AND user_id=?", (guild.id, member.id))
+    genders = {name for name, *_ in config.GENDERS}
+    gender = next((r for rid in filter(None, saved.split(",")) if (r := guild.get_role(int(rid))) and r.name in genders),
+                  None)
+    camo = [r for r in (discord.utils.get(guild.roles, name=config.ROLE_BASE), gender) if r and r < guild.me.top_role]
+    want = [role, *keep, *camo]
     if set(member.roles) - {guild.default_role} != set(want) or member.nick != fake_nick(member.id):
         await member.edit(roles=want, nick=fake_nick(member.id), reason="Невидимка")
     await forget_activity(guild, member.id)
