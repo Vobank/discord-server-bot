@@ -82,6 +82,11 @@ CREATE TABLE IF NOT EXISTS badges (
     guild_id INTEGER, key TEXT, data BLOB,
     PRIMARY KEY (guild_id, key)
 );
+CREATE TABLE IF NOT EXISTS feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER, user_id INTEGER, kind TEXT, title TEXT, text TEXT, status TEXT DEFAULT 'new',
+    message_id INTEGER, created_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS song_picks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER, title TEXT, url TEXT, duration INTEGER, thumbnail TEXT, author TEXT,

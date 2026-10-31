@@ -345,6 +345,9 @@ class Supervisor:
                 await self.upload_db(d, force=True)
             elif what == "unpin":
                 self.pinned = False
+            elif what == "update_post" and c.get("post"):  # пост «что нового» — бот опубликует его за 20 с
+                with open(os.path.join(sync.RUNTIME, "update_post.json"), "w", encoding="utf-8") as f:
+                    json.dump(c["post"], f, ensure_ascii=False)
             elif what == "bot_task" and c.get("task"):  # разовое задание боту, он заберёт его за 30 с
                 with open(os.path.join(sync.RUNTIME, "bot_task.txt"), "w", encoding="utf-8") as f:
                     f.write(str(c["task"]))
