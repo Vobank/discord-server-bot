@@ -32,7 +32,7 @@ def lines(text: str) -> list[str]:
 
 def post_embed(number: int, post: dict) -> discord.Embed:
     now = datetime.datetime.now(config.TIMEZONE)
-    e = discord.Embed(title=f"🤖 Обновление №{number} · {now.day} {MONTHS[now.month - 1]}",
+    e = discord.Embed(title=f"Обновление №{number} · {now.day} {MONTHS[now.month - 1]}",
                       description=(post.get("intro") or "").strip()[:1000] or None, colour=COLOUR)
     for key, name in SECTIONS:
         items = post.get(key) or []
