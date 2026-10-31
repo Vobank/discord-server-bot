@@ -49,9 +49,23 @@ COGS = {
     "cogs.ghosts": None,
     "cogs.updates": None,
     "cogs.bot_panel": None,
+    "cogs.streams": None,
 }
 
 log = logging.getLogger("bot")
+
+
+def presence_allowed() -> bool:
+    """Включён ли у приложения Presence Intent (Developer Portal → Bot). Без него просить статусы нельзя —
+    Discord не пустит бота, поэтому спрашиваем заранее. Нужен для оповещений о стримах (cogs/streams.py)."""
+    import urllib.request
+    try:
+        req = urllib.request.Request("https://discord.com/api/v10/applications/@me",
+                                     headers={"Authorization": f"Bot {TOKEN}", "User-Agent": "DiscordBot (bot, 1)"})
+        flags = json.load(urllib.request.urlopen(req, timeout=10)).get("flags", 0)
+        return bool(flags & ((1 << 12) | (1 << 13)))  # GATEWAY_PRESENCE или GATEWAY_PRESENCE_LIMITED
+    except Exception:
+        return False
 
 
 class Bot(commands.Bot):
@@ -59,6 +73,7 @@ class Bot(commands.Bot):
         intents = discord.Intents.default()
         intents.members = True
         intents.message_content = True
+        intents.presences = not HELPER and presence_allowed()
         super().__init__(command_prefix="!", intents=intents)
 
     def dispatch(self, event_name: str, /, *args, **kwargs):
