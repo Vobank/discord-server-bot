@@ -1,6 +1,8 @@
 """Вход на сервер: пошаговая анкета в #👋・старт — 1) пол → 2) день рождения → 3) игры.
 Одна кнопка «📝 Заполнить анкету» открывает личное окно, каждый шаг заменяет предыдущий в том же окне,
-поэтому ничего не копится и порядок не перепутать. После анкеты там же можно что-то изменить."""
+поэтому ничего не копится и порядок не перепутать. После анкеты там же можно что-то изменить.
+/reonboard — «все заново»: все, кроме администрации, снова получают 🔒 и проходят анкету (дату рождения —
+только если в ней нет года; игры — все), сервер откроется после неё."""
 import asyncio
 import logging
 
@@ -290,6 +292,70 @@ class DoneView(Step):
         await show(interaction, "games")
 
 
+# ---------- все заново ----------
+def exempt(member: discord.Member) -> bool:
+    """Кого «все заново» не трогает: боты, невидимки, администрация, модераторы и mini Admin."""
+    if member.bot or config.is_ghost(member) or member.guild_permissions.administrator:
+        return True
+    keep = config.STAFF_ROLES | config.MOD_ROLES | {config.admin_role_name(g["name"]) for g in config.GAMES}
+    return any(r.name in keep for r in member.roles)
+
+
+async def reset_member(member: discord.Member) -> bool:
+    """Снова закрыть сервер до анкеты. Игровые роли придерживаются и вернутся после неё (кроме снятых в выборе игр)."""
+    g = member.guild
+    pending = discord.utils.get(g.roles, name=config.ROLE_PENDING)
+    base = discord.utils.get(g.roles, name=config.ROLE_BASE)
+    if exempt(member) or not pending or is_pending(member):
+        return False
+    row = await birthday_of(member)
+    await db.set_setting(g.id, f"bday_ok:{member.id}", "1" if row and row[2] else "")  # с годом — не спрашиваем
+    await db.set_setting(g.id, f"games_ok:{member.id}", "")
+    await db.execute("DELETE FROM settings WHERE guild_id=? AND key=?", (g.id, f"wiz_games:{member.id}"))
+    games = [r for r in member.roles if r.name in DEPT_ROLE_NAMES]
+    await set_stash(member, games)
+    await member.add_roles(pending, reason="Все заново: анкета")
+    remove = [*games, *([base] if base in member.roles else [])]
+    if remove:
+        await member.remove_roles(*remove, reason="Все заново: вернётся после анкеты")
+    return True
+
+
+class ReonboardConfirm(discord.ui.View):
+    def __init__(self, members: list[discord.Member]):
+        super().__init__(timeout=300)
+        self.members = members
+
+    @discord.ui.button(label="Да, всем заново", emoji="🔒", style=discord.ButtonStyle.danger)
+    async def go(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content=f"⏳ Закрываю сервер для {len(self.members)} человек…",
+                                                view=None)
+        channel = discord.utils.get(interaction.guild.text_channels, name=config.CH_WELCOME)
+        done = 0
+        for i, member in enumerate(self.members, 1):
+            try:
+                if await reset_member(member):
+                    done += 1
+                    try:
+                        await member.send(
+                            f"👋 Привет! На **{interaction.guild.name}** обновилась анкета. Чтобы снова открыть все "
+                            f"каналы, зайди в {channel.mention if channel else '#старт'}, нажми **📝 Заполнить анкету** "
+                            "и выбери возраст и игры — это меньше минуты.")
+                    except discord.HTTPException:
+                        pass
+            except discord.HTTPException:
+                log.exception("Все заново: не получилось для %s", member)
+            if i % 20 == 0:
+                await interaction.edit_original_response(content=f"⏳ {i} из {len(self.members)}…")
+        await interaction.edit_original_response(
+            content=f"✅ Готово: {done} человек снова проходят анкету в {channel.mention if channel else '#старт'}. "
+                    "Каждому написал в ЛС (у кого открыты).")
+
+    @discord.ui.button(label="Отмена", emoji="✖️")
+    async def cancel(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="Отменено", view=None, delete_after=10)
+
+
 # ---------- кнопка в #👋・старт ----------
 class StartView(discord.ui.View):
     def __init__(self):
@@ -399,6 +465,16 @@ class Onboarding(commands.Cog):
             return
         if games:
             await set_stash(member, list({*await stashed_roles(member), *games}))
+
+    @app_commands.command(name="reonboard", description="(Админ) Все заново: всем, кроме администрации, пройти анкету")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def reonboard(self, interaction: discord.Interaction):
+        members = [m for m in interaction.guild.members if not exempt(m) and not is_pending(m)]
+        await interaction.response.send_message(
+            f"🔒 **Все заново?** {len(members)} человек (все, кроме администрации, модераторов и mini Admin) "
+            "потеряют доступ к каналам, пока снова не пройдут анкету в #старт: возраст (если в дате рождения "
+            "нет года) и игры. Каждому придёт ЛС.", view=ReonboardConfirm(members), ephemeral=True)
 
     @app_commands.command(name="panels", description="Отправить заново панель в #👋・старт")
     @app_commands.default_permissions(administrator=True)

@@ -1,9 +1,11 @@
 """🤖 Обновления: Дворецкий коротко рассказывает в #🤖・обновления, что добавили, что изменили и что в планах.
 Пишут высшие админы (право «Администратор») командой /update: окно с тремя разделами → предпросмотр →
-«Опубликовать». Под каждым постом кнопки «💡 Предложить улучшение» и «💬 Другое»: написанное видят только
+«В утренний пост». Чтобы бот не писал по 10 раз в день, всё накопленное выходит ОДНИМ постом в 10:00 МСК
+(то, что добавили после 10:00, — на следующее утро). Срочное можно опубликовать сразу. Под каждым постом кнопки «💡 Предложить улучшение» и «💬 Другое»: написанное видят только
 админы — в #📮・предложения (категория админки), там можно ответить человеку в ЛС от имени бота.
 Пост можно подготовить и файлом: runtime/update_post.json ({"added": [...], "changed": [...], "planned": [...],
-"intro": "…", "number": 1 — если нужен свой номер}) — бот опубликует его сам в течение 20 секунд (так обновления публикует разработчик)."""
+"intro": "…", "number": 1 — если нужен свой номер, "now": true — сразу, а не в 10:00}) — бот заберёт его
+за 20 секунд (так обновления публикует разработчик)."""
 import datetime
 import json
 import logging
@@ -90,7 +92,56 @@ async def publish(guild: discord.Guild, post: dict) -> discord.Message | None:
     return msg
 
 
-# ---------- /update: окно → предпросмотр → опубликовать ----------
+# ---------- очередь: всё за день — одним постом в 10:00 МСК ----------
+POST_HOUR = 10
+
+
+async def queued(guild_id: int) -> list[dict]:
+    try:
+        return json.loads(await db.get_setting(guild_id, "update_queue", "[]") or "[]")
+    except ValueError:
+        return []
+
+
+async def enqueue(guild_id: int, post: dict):
+    items = await queued(guild_id)
+    items.append({"ts": time.time(), "post": {k: post.get(k) for k in ("intro", "added", "changed", "planned")}})
+    await db.set_setting(guild_id, "update_queue", json.dumps(items, ensure_ascii=False))
+
+
+def merge(posts: list[dict]) -> dict:
+    """Несколько обновлений → один пост: пункты без повторов, вступление — последнее."""
+    out = {"intro": "", **{key: [] for key, _ in SECTIONS}}
+    for p in posts:
+        out["intro"] = (p.get("intro") or "").strip() or out["intro"]
+        for key, _ in SECTIONS:
+            out[key] += [s for s in p.get(key) or [] if s not in out[key]]
+    return out
+
+
+def next_post_time() -> str:
+    now = datetime.datetime.now(config.TIMEZONE)
+    return "сегодня в 10:00" if now.hour < POST_HOUR else "завтра в 10:00"
+
+
+async def morning_post(guild: discord.Guild) -> discord.Message | None:
+    """В 10:00 МСК (или позже, если бот был выключен) — один пост из всего, что добавили до 10:00."""
+    now = datetime.datetime.now(config.TIMEZONE)
+    today = now.date().isoformat()
+    if now.hour < POST_HOUR or await db.get_setting(guild.id, "update_day") == today:
+        return None
+    cutoff = now.replace(hour=POST_HOUR, minute=0, second=0, microsecond=0).timestamp()
+    items = await queued(guild.id)
+    ready, later = [i for i in items if i["ts"] < cutoff], [i for i in items if i["ts"] >= cutoff]
+    await db.set_setting(guild.id, "update_day", today)
+    if not ready:
+        return None
+    msg = await publish(guild, merge([i["post"] for i in ready]))
+    await db.set_setting(guild.id, "update_queue", json.dumps(later, ensure_ascii=False))
+    return msg
+
+
+# ---------- /update: окно → предпросмотр → в утренний пост ----------
 class UpdateModal(discord.ui.Modal):
     def __init__(self, post: dict | None = None):
         super().__init__(title="🤖 Обновление от Дворецкого")
@@ -113,7 +164,8 @@ class UpdateModal(discord.ui.Modal):
             return await interaction.response.send_message("⚠️ Заполни хотя бы один раздел", ephemeral=True,
                                                            delete_after=15)
         number = int(await db.get_setting(interaction.guild.id, "update_counter", "0")) + 1
-        await interaction.response.send_message("**Так будет выглядеть пост** — публиковать?",
+        await interaction.response.send_message("**Так будет выглядеть пост.** Обычно всё за день выходит одним "
+                                                "постом в 10:00 МСК — срочное можно опубликовать сразу.",
                                                 embed=post_embed(number, post), view=PreviewView(post), ephemeral=True)
 
 
@@ -122,7 +174,14 @@ class PreviewView(discord.ui.View):
         super().__init__(timeout=900)
         self.post = post
 
-    @discord.ui.button(label="Опубликовать", emoji="📢", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="В утренний пост (10:00)", emoji="🕙", style=discord.ButtonStyle.success)
+    async def morning(self, interaction: discord.Interaction, _):
+        await enqueue(interaction.guild.id, self.post)
+        await interaction.response.edit_message(
+            content=f"✅ Добавил — выйдет одним постом со всем остальным {next_post_time()} по МСК", embed=None,
+            view=None, delete_after=30)
+
+    @discord.ui.button(label="Сразу", emoji="📢")
     async def send(self, interaction: discord.Interaction, _):
         await interaction.response.edit_message(content="⏳ Публикую…", embed=None, view=None)
         msg = await publish(interaction.guild, self.post)
@@ -277,7 +336,13 @@ class Updates(commands.Cog):
 
     @tasks.loop(seconds=20)
     async def from_file(self):
-        """Готовый пост от разработчика: runtime/update_post.json → публикуем и удаляем файл."""
+        """Утренний пост в 10:00 и готовые посты от разработчика: runtime/update_post.json → в очередь."""
+        for guild in self.bot.guilds:
+            try:
+                if msg := await morning_post(guild):
+                    log.info("Утренний пост об обновлениях: %s", msg.jump_url)
+            except discord.HTTPException:
+                log.exception("Не вышел утренний пост об обновлениях")
         if not os.path.exists(POST_FILE):
             return
         try:
@@ -288,8 +353,12 @@ class Updates(commands.Cog):
             log.exception("Не прочитался %s", POST_FILE)
             return
         for guild in self.bot.guilds:
-            msg = await publish(guild, post)
-            log.info("Опубликовано обновление: %s", msg.jump_url if msg else "канала нет")
+            if post.get("now"):
+                msg = await publish(guild, post)
+                log.info("Опубликовано обновление: %s", msg.jump_url if msg else "канала нет")
+            else:
+                await enqueue(guild.id, post)
+                log.info("Обновление в очереди — выйдет %s", next_post_time())
 
     @from_file.before_loop
     async def before(self):

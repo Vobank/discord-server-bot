@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS feedback (
     guild_id INTEGER, user_id INTEGER, kind TEXT, title TEXT, text TEXT, status TEXT DEFAULT 'new',
     message_id INTEGER, created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS streams (
+    guild_id INTEGER, user_id INTEGER, thread_id INTEGER, game TEXT, started INTEGER,
+    PRIMARY KEY (guild_id, user_id)
+);
 CREATE TABLE IF NOT EXISTS song_picks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER, title TEXT, url TEXT, duration INTEGER, thumbnail TEXT, author TEXT,

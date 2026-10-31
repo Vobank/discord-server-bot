@@ -48,6 +48,7 @@ COGS = {
     "cogs.cleanup": "hide_thread_notices",
     "cogs.ghosts": None,
     "cogs.updates": None,
+    "cogs.streams": None,
 }
 
 log = logging.getLogger("bot")
