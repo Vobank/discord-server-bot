@@ -294,6 +294,8 @@ class RoomPanelView(discord.ui.View):
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         custom_id = (interaction.data or {}).get("custom_id")
+        if custom_id == "room:help":  # помощь — всем
+            return True
         if custom_id in MUSIC_BUTTONS:
             voice = interaction.user.voice
             if voice and voice.channel and voice.channel.id == interaction.channel_id:
@@ -388,6 +390,10 @@ class RoomPanelView(discord.ui.View):
         await interaction.response.send_message(embed=await room_info(await owned_room(interaction.user)),
                                                 ephemeral=True, delete_after=2 * GONE)
 
+    @discord.ui.button(label="Помощь", emoji="❓", custom_id="room:help", row=3)
+    async def help(self, interaction, _):
+        await interaction.response.send_message(embed=help_embed(), ephemeral=True, delete_after=3 * GONE)
+
     @discord.ui.button(label="Забрать комнату", emoji="🙋", style=discord.ButtonStyle.primary, custom_id="room:claim",
                        row=3)
     async def claim(self, interaction, _):
@@ -435,11 +441,20 @@ class RoomPanelView(discord.ui.View):
         await self.music(interaction).show_picks(interaction)
 
 
+PANEL_TITLE = "🎛️ Управление комнатой"
+
+
 def panel_embed(owner: discord.Member) -> discord.Embed:
+    """Панель в чате комнаты — коротко, чтобы не занимала полчата. Что делают кнопки — по кнопке «Помощь»."""
+    return discord.Embed(title=PANEL_TITLE, description=f"👑 {owner.mention} · ❓ **Помощь** — что делают кнопки",
+                         colour=discord.Colour.blurple())
+
+
+def help_embed() -> discord.Embed:
     return discord.Embed(
-        title="🔊 Панель твоей комнаты",
+        title="❓ Что делают кнопки",
         description=(
-            f"{owner.mention}, это твоя комната. Когда все выйдут, она удалится сама.\n\n"
+            "Это личная комната хозяина. Когда все выйдут, она удалится сама.\n\n"
             "✏️ **Название** · 👥 **Лимит** людей\n"
             "🔒 **Закрыть** — зайти может любой, но ничего не слышит и молчит, пока ты не пустишь · "
             "🔓 **Открыть** для всех\n"
@@ -452,7 +467,9 @@ def panel_embed(owner: discord.Member) -> discord.Embed:
             "🎵 **Музыка** — название, ссылка или опиши песню, ИИ угадает · 📻 **Радио** · 📄 **Очередь** · "
             "⭐ **Подборка** песен сервера\n\n"
             "Музыку включает любой, кто в комнате, остальными кнопками пользуется хозяин. "
-            "Ответы бота видишь только ты, и они исчезают сами."
+            "Ответы бота видишь только ты, и они исчезают сами.\n\n"
+            "Панель бот раз в 2 минуты опускает вниз чата: старую убирает, новую присылает. "
+            "Ваши сообщения он не трогает."
         ),
         colour=discord.Colour.blurple(),
     )
@@ -514,6 +531,9 @@ class VoiceRooms(commands.Cog):
                     async for msg in room.history(limit=50):
                         if msg.author == self.bot.user and any(getattr(c, "custom_id", None) == "room:name"
                                                                for row in msg.components for c in row.children):
+                            if msg.embeds and msg.embeds[0].title != PANEL_TITLE:  # старая длинная панель
+                                await msg.delete()
+                                break
                             panel = self.panels[room.id] = msg.id
                             break
                 except discord.HTTPException:

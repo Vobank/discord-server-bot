@@ -162,14 +162,28 @@ async def wiki_image(article: str, lang: str) -> bytes | None:
         return None
 
 
+def is_image(data: bytes | None) -> bool:
+    """Это и правда картинка? Из России вместо картинок Википедии иногда приходит страница-заглушка."""
+    if not data:
+        return False
+    try:
+        from PIL import Image
+        import io
+        Image.open(io.BytesIO(data)).verify()
+        return True
+    except Exception:
+        return False
+
+
 async def poster(title: str, info: dict | None = None) -> bytes | None:
-    """Обложка: настоящий постер из Википедии, а если его нет — нарисованная ИИ."""
+    """Обложка: настоящий постер из Википедии, а если его нет (или не скачался) — нарисованная ИИ."""
     info = info or {}
     for lang in ("ru", "en"):
-        if data := await wiki_image(info.get(f"wiki_{lang}") or "", lang):
+        if is_image(data := await wiki_image(info.get(f"wiki_{lang}") or "", lang)):
             return data
     prompt = info.get("poster_prompt") or f"atmospheric cinematic movie poster for the film \"{title}\""
     try:
-        return await image(prompt + ", cinematic lighting, highly detailed, vertical movie poster, no text, no letters")
+        data = await image(prompt + ", cinematic lighting, highly detailed, vertical movie poster, no text, no letters")
     except AIError:
         return None
+    return data if is_image(data) else None

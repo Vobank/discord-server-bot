@@ -413,6 +413,8 @@ class EditMenu(discord.ui.View):
                                   + ", cinematic lighting, vertical movie poster, no text, no letters")
         except ai.AIError as e:
             return await done(interaction, f"⚠️ {e}")
+        if not ai.is_image(data):
+            return await done(interaction, "⚠️ ИИ прислал не картинку — попробуй ещё раз")
         await db.execute("UPDATE films SET poster=? WHERE id=?",
                          (await asyncio.to_thread(film_card.shrink_poster, data), self.fid))
         await update_card(interaction.guild, self.fid)
