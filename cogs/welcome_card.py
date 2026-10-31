@@ -72,7 +72,58 @@ def circle_avatar(data: bytes, size: int) -> Image.Image:
     return av
 
 
+FRAME = os.path.join(ROOT, "assets", "cards", "welcome_frame.png")
+INTER = os.path.join(ROOT, "assets", "fonts")
+
+
+def inter(weight: str, size: int):
+    """Шрифт Inter из assets/fonts (есть кириллица и одинаково выглядит на любом ПК)."""
+    path = os.path.join(INTER, f"Inter-{weight}.ttf")
+    return ImageFont.truetype(path, size) if os.path.exists(path) else font(FONT_BOLD, size)
+
+
+def fit(d: ImageDraw.ImageDraw, text: str, weight: str, size: int, width: int, smallest: int = 12):
+    """Шрифт поменьше, пока текст не влезет; не влез и самым маленьким — обрезаем с «…»."""
+    while size > smallest and d.textlength(text, font=inter(weight, size)) > width:
+        size -= 1
+    f = inter(weight, size)
+    while text and d.textlength(text, font=f) > width:
+        text = text[:-2] + "…"
+    return text, f
+
+
+def centered(d: ImageDraw.ImageDraw, box: tuple, text: str, weight: str, size: int, fill, pad: int = 10):
+    x0, y0, x1, y1 = box
+    text, f = fit(d, text, weight, size, x1 - x0 - 2 * pad)
+    d.text(((x0 + x1) / 2, (y0 + y1) / 2), text, font=f, fill=fill, anchor="mm")
+
+
+def render_frame(avatar: bytes, name: str, number: int, server: str) -> bytes:
+    """Карточка в рамке assets/cards/welcome_frame.png: аватар в круге, ник, номер, приветствие."""
+    frame = Image.open(FRAME).convert("RGBA")
+    img = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    cx, cy, r = 341, 176, 134  # круг под аватар
+    ImageDraw.Draw(img).ellipse((cx - r, cy - r, cx + r, cy + r), fill=(8, 12, 34, 255))
+    img.alpha_composite(circle_avatar(avatar, 2 * r), (cx - r, cy - r))
+    img.alpha_composite(frame)  # рамка сверху: светящийся край ложится поверх аватара
+    d = ImageDraw.Draw(img)
+    white, blue = (255, 255, 255, 255), (120, 200, 255, 255)
+    centered(d, (184, 314, 485, 350), name, "Bold", 26, white)
+    centered(d, (284, 369, 432, 395), f"{number:04d}", "Bold", 22, blue, pad=4)
+    title = config.THEME["welcome_title"].capitalize().rstrip("!")
+    text, f = fit(d, f"{title}, {name}!", "Bold", 36, 1362 - 568 - 48)
+    d.text((592, 222), text, font=f, fill=white)
+    sub = config.THEME["welcome_subtitle"].replace("{server}", server)
+    text, f = fit(d, f"{sub[:1].upper()}{sub[1:]} · ты {number}-й участник", "Medium", 26, 1362 - 568 - 48)
+    d.text((592, 266), text, font=f, fill=blue)
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
 def render(avatar: bytes, name: str, number: int, server: str) -> bytes:
+    if os.path.exists(FRAME):
+        return render_frame(avatar, name, number, server)
     img = background(number).convert("RGBA")
     d = ImageDraw.Draw(img)
 

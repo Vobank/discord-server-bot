@@ -1,14 +1,16 @@
 """Картинка-карточка фильма в стиле приветствия новичков: обложка вместо аватарки, название вместо ника,
 жанры вместо «Добро пожаловать», год · страна · длительность ниже, плашка «хотят посмотреть ×N»."""
 import io
+import os
 import random
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from cogs.welcome_card import ACCENT, ACCENT2, FONT_BOLD, FONT_REG, background, font
+from cogs.welcome_card import ACCENT, ACCENT2, FONT_BOLD, FONT_REG, ROOT, background, font
 
 W, H = 1100, 420
 GOLD = (245, 197, 24)
+FRAME = os.path.join(ROOT, "assets", "cards", "film_frame.png")  # своя рамка; нет файла — рисуем как раньше
 
 
 def shrink_poster(data: bytes) -> bytes:
@@ -40,7 +42,72 @@ def wrap(draw: ImageDraw.ImageDraw, text: str, fnt, width: int, max_lines: int) 
     return lines
 
 
-def render(title: str, genres: list[str], meta: str, badge: str, poster: bytes | None, watched: bool = False) -> bytes:
+def cover_fit(data: bytes, w: int, h: int) -> Image.Image:
+    """Картинка ровно w×h: увеличить и обрезать по центру."""
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    scale = max(w / img.width, h / img.height)
+    img = img.resize((int(img.width * scale) + 1, int(img.height * scale) + 1), Image.LANCZOS)
+    left, top = (img.width - w) // 2, (img.height - h) // 2
+    return img.crop((left, top, left + w, top + h))
+
+
+def render_frame(title: str, genres: list[str], badge: str, poster: bytes | None, watched: bool, info: dict) -> bytes:
+    """Карточка в рамке assets/cards/film_frame.png. info: year, country, duration, description, count."""
+    from cogs.welcome_card import centered, fit, inter
+    frame = Image.open(FRAME).convert("RGBA")
+    img = Image.new("RGBA", frame.size, (0, 0, 0, 0))
+    d = ImageDraw.Draw(img)
+    px0, py0, px1, py1 = 151, 32, 406, 365  # окно под постер
+    d.rectangle((px0, py0, px1, py1), fill=(8, 12, 34, 255))
+    if poster:
+        img.paste(cover_fit(poster, px1 - px0 + 1, py1 - py0 + 1), (px0, py0))
+    else:
+        d.text(((px0 + px1) / 2, (py0 + py1) / 2), "КИНО", font=inter("Bold", 44), fill=(*GOLD, 255), anchor="mm")
+    img.alpha_composite(frame)
+    if poster:  # «кадры» справа внизу — увеличенные куски обложки, поверх тёмных окошек рамки
+        big = cover_fit(poster, 600, 900)
+        mask_cache = {}
+        for i, (x0, x1) in enumerate([(1374, 1493), (1512, 1631), (1649, 1766), (1783, 1873)]):
+            x0, x1, y0, y1 = x0 + 4, x1 - 4, 269, 350
+            w, h = x1 - x0 + 1, y1 - y0 + 1
+            part = big.crop((40 + i * 130, 140 + i * 160, 40 + i * 130 + w * 2, 140 + i * 160 + h * 2)).resize((w, h))
+            if (w, h) not in mask_cache:
+                mask_cache[w, h] = Image.new("L", (w, h), 0)
+                ImageDraw.Draw(mask_cache[w, h]).rounded_rectangle((0, 0, w - 1, h - 1), radius=8, fill=255)
+            img.paste(part, (x0, y0), mask_cache[w, h])
+    d = ImageDraw.Draw(img)
+    white, soft, blue = (255, 255, 255, 255), (205, 215, 240, 255), (120, 200, 255, 255)
+    green = (61, 220, 132, 255)
+
+    text, f = fit(d, title, "Bold", 34, 1020 - 554 - 24, smallest=18)
+    d.text((566, 70), text, font=f, fill=white, anchor="lm")
+    # «хотят ×N» и «в подборке» и так видны в нижней строке — в плашках только полезный статус
+    status = "" if badge.startswith(("ХОТЯТ", "В ПОДБОРКЕ")) else badge
+    pills = [*genres[:2], status][:3]
+    for (x0, x1), label in zip([(500, 668), (683, 850), (866, 1035)], pills):
+        if label:
+            centered(d, (x0, 112, x1, 141), label.upper(), "Bold", 17, green if watched and label == badge else blue)
+    for y0, y1, value in ((156, 185, info.get("year")), (200, 229, info.get("country")), (244, 273, info.get("duration"))):
+        text, f = fit(d, value or "—", "Medium", 20, 785 - 566 - 20)
+        d.text((578, (y0 + y1) / 2), text, font=f, fill=soft, anchor="lm")
+    desc = info.get("description") or "Описания пока нет — его можно добавить кнопкой «Заполнить / исправить»."
+    lines = wrap(d, desc, inter("Regular", 18), 1327 - 810 - 32, 4)
+    for i, line in enumerate(lines):
+        d.text((826, 166 + i * 24), line, font=inter("Regular", 18), fill=soft)
+    label = "Уже посмотрели" if watched else "Хотят посмотреть"
+    text, f = fit(d, label, "Bold", 24, 910 - 597 - 20)
+    d.text((600, 327), text, font=f, fill=green if watched else white, anchor="lm")
+    centered(d, (930, 301, 1094, 352), "✓" if watched else str(info.get("count") or 1), "Bold", 30,
+             green if watched else blue)
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+def render(title: str, genres: list[str], meta: str, badge: str, poster: bytes | None, watched: bool = False,
+           info: dict | None = None) -> bytes:
+    if os.path.exists(FRAME):
+        return render_frame(title, genres, badge, poster, watched, info or {})
     # фон: размытая обложка (если есть) или фирменный ночной фон
     if poster:
         p = Image.open(io.BytesIO(poster)).convert("RGB")

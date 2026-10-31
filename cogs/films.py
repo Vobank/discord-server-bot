@@ -128,8 +128,13 @@ async def card_file(f: dict) -> discord.File:
         total = f.get("episodes_total")
         badge = f"СЕРИЯ {f['episodes_watched']} ИЗ {total}" if total else f"ПОСМОТРЕЛИ {f['episodes_watched']} СЕРИЙ"
     data = await asyncio.to_thread(film_card.render, f["title"], [GENRES[k][1] for k in genre_keys(f)],
-                                   meta_line(f), badge, f["poster"], watched)
+                                   meta_line(f), badge, f["poster"], watched, card_info(f))
     return discord.File(io.BytesIO(data), filename="film.png")
+
+
+def card_info(f: dict) -> dict:
+    """Поля для картинки-карточки: год, страна, длительность, описание, сколько хотят."""
+    return {k: f.get(k) for k in ("year", "country", "duration", "description", "count")}
 
 
 async def session_card(guild: discord.Guild, title: str, badge: str) -> tuple[discord.File, dict | None]:
@@ -138,7 +143,8 @@ async def session_card(guild: discord.Guild, title: str, badge: str) -> tuple[di
     f = as_dict(row) if row else None
     genres = [GENRES[k][1] for k in genre_keys(f)] if f else []
     data = await asyncio.to_thread(film_card.render, f["title"] if f else title, genres,
-                                   meta_line(f) if f else "", badge, f["poster"] if f else None)
+                                   meta_line(f) if f else "", badge, f["poster"] if f else None, False,
+                                   card_info(f) if f else None)
     return discord.File(io.BytesIO(data), filename="film.png"), f
 
 
