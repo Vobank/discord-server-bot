@@ -30,7 +30,7 @@ def achievements_embed(guild: discord.Guild) -> discord.Embed:
     roles = [r for a in config.ACHIEVEMENTS if (r := discord.utils.get(guild.roles, name=a["role"]))]
     rows = []
     for m in guild.members:
-        if m.bot:
+        if m.bot or config.is_ghost(m):
             continue
         got = [r for r in roles if r in m.roles]
         if got:
@@ -40,7 +40,7 @@ def achievements_embed(guild: discord.Guild) -> discord.Embed:
              for i, (n, m, got) in enumerate(rows[:MAX_LINES], 1)]
     if len(rows) > MAX_LINES:
         lines.append(f"…и ещё {len(rows) - MAX_LINES} чел.")
-    counts = " · ".join(f"{ach_icon(r.name)} {len([m for m in r.members if not m.bot])}" for r in roles)
+    counts = " · ".join(f"{ach_icon(r.name)} {len([m for m in r.members if not m.bot and not config.is_ghost(m)])}" for r in roles)
     e = discord.Embed(title="🏆 Достижения — у кого сколько", description="\n".join(lines) or "Пока ни у кого нет",
                       colour=discord.Colour.orange())
     e.add_field(name="Сколько людей с каждым достижением", value=counts or "—", inline=False)

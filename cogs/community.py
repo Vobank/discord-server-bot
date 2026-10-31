@@ -249,7 +249,8 @@ class Community(commands.Cog):
         voice = await db.fetchall("SELECT user_id, value FROM stats WHERE guild_id=? AND key=? ORDER BY value DESC "
                                   "LIMIT 3", (g.id, f"wvoice:{wk}"))
         week_ago = discord.utils.utcnow() - datetime.timedelta(days=7)
-        newbies = [m for m in g.members if not m.bot and m.joined_at and m.joined_at > week_ago]
+        newbies = [m for m in g.members if not m.bot and not config.is_ghost(m) and m.joined_at
+                   and m.joined_at > week_ago]
         medals = ["🥇", "🥈", "🥉", "4.", "5."]
         e = discord.Embed(title="📰 Итоги недели", colour=discord.Colour.purple(),
                           description=f"Неделя {now.strftime('%d.%m')} · спасибо, что вы с нами 💜")

@@ -304,7 +304,7 @@ class BirthdayForView(StaffView):
 
 # ---------- Статистика ----------
 async def stats_embed(guild: discord.Guild) -> discord.Embed:
-    humans = [m for m in guild.members if not m.bot]
+    humans = [m for m in guild.members if not m.bot and not config.is_ghost(m)]
 
     def count(name):
         role = discord.utils.get(guild.roles, name=name)

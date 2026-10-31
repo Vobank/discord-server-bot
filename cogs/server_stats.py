@@ -20,7 +20,7 @@ class ServerStats(commands.Cog):
             counter = next((v for v in guild.voice_channels if v.name.startswith(config.STATS_PREFIX)), None)
             if not counter:
                 continue
-            name = f"{config.STATS_PREFIX}{len([m for m in guild.members if not m.bot])}"
+            name = f"{config.STATS_PREFIX}{len([m for m in guild.members if not m.bot and not config.is_ghost(m)])}"
             if counter.name != name:
                 try:
                     await counter.edit(name=name, reason="Счётчик участников")

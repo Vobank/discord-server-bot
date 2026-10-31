@@ -138,7 +138,7 @@ class WelcomeCard(commands.Cog):
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if member.bot:
+        if member.bot or config.is_ghost(member):
             return
         channel = discord.utils.get(member.guild.text_channels, name=config.CH_JOINS)
         if not channel:

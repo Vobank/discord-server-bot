@@ -20,7 +20,8 @@ class Levels(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
-        if message.author.bot or not message.guild or not isinstance(message.author, discord.Member):
+        if message.author.bot or not message.guild or not isinstance(message.author, discord.Member) \
+                or config.is_ghost(message.author):
             return
         key = (message.guild.id, message.author.id)
         now = time.monotonic()

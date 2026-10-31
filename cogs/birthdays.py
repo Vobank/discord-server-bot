@@ -148,7 +148,7 @@ class Birthdays(commands.Cog):
                 continue
             guild = self.bot.get_guild(guild_id)
             member = guild and guild.get_member(user_id)
-            if not member:
+            if not member or config.is_ghost(member):  # невидимок не поздравляем публично
                 continue
             await self.congratulate(member, year, bool(public), today)
             await db.execute("UPDATE birthdays SET last_congrats=? WHERE guild_id=? AND user_id=?",
@@ -193,7 +193,7 @@ class Birthdays(commands.Cog):
         if (created.day, created.month) == (today.day, today.month) and today.year > created.year:
             years = today.year - created.year
             posts.append((f"🎂 Серверу {guild.name} исполняется {years}!",
-                          f"Спасибо каждому, кто с нами! Вместе нас уже {guild.member_count} 💜"))
+                          f"Спасибо каждому, кто с нами! Вместе нас уже {guild.member_count - len([m for m in guild.members if config.is_ghost(m)])} 💜"))
         for title, text in posts:
             await channel.send(content="@everyone", embed=discord.Embed(title=title, description=text,
                                                                          colour=discord.Colour.gold()),
@@ -236,7 +236,7 @@ class Birthdays(commands.Cog):
         items = []
         for user_id, day, month in rows:
             member = interaction.guild.get_member(user_id)
-            if member:
+            if member and not config.is_ghost(member):
                 nxt = next_birthday(day, month, today)
                 items.append(((nxt - today).days, member, day, month))
         items.sort(key=lambda x: x[0])

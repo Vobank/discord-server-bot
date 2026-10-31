@@ -13,6 +13,8 @@ NIGHT_COOLDOWN = 10  # сек — чтобы «Полуночника» не н�
 
 
 async def add_stat(guild_id: int, user_id: int, key: str, delta: int = 1) -> int:
+    if config.is_ghost(user_id):  # невидимкам статистику не ведём
+        return 0
     await db.execute("INSERT INTO stats (guild_id, user_id, key, value) VALUES (?,?,?,?) "
                      "ON CONFLICT(guild_id, user_id, key) DO UPDATE SET value = value + excluded.value",
                      (guild_id, user_id, key, delta))
@@ -43,7 +45,7 @@ async def progress(member: discord.Member) -> dict[str, int]:
 
 async def check(member: discord.Member, only: set[str] | None = None):
     """Выдать заслуженные роли. only — проверять только эти stat (экономим запросы)."""
-    if member.bot or not config.enabled("levels"):
+    if member.bot or not config.enabled("levels") or config.is_ghost(member):
         return
     values = await progress(member)
     # объявления — только в канале достижений (нет канала — молча, без запасного «уровней»)

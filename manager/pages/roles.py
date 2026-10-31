@@ -144,6 +144,11 @@ class View(Page):
         row = g.row("Роли магазина", "Роли, которые эти боты продают: они стоят ещё ниже, чтобы боты могли их выдавать.",
                     "tag")
         self.bind_entry(row.right, "s:shop_roles", 26, kind="list", placeholder="Через запятую").pack(side="left")
+        row = g.row("Невидимки",
+                    "ID участников, которых на сервере как будто нет: бот прячет их роли и ник, не даёт их тегнуть, "
+                    "не считает уровни и достижения. Убрали ID — роли и ник вернутся. Роль бота должна стоять выше "
+                    "их ролей.", "hide")
+        self.bind_entry(row.right, "s:ghosts", 26, kind="list", placeholder="ID через запятую").pack(side="left")
 
     def on_show(self):
         self.show_levels_note()

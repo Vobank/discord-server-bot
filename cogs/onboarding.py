@@ -344,7 +344,7 @@ class Onboarding(commands.Cog):
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
         """Новичок получает 🔒 Анкета — видит только старт и правила, пока не заполнит анкету."""
-        if member.bot:
+        if member.bot or config.is_ghost(member):
             return
         pending = discord.utils.get(member.guild.roles, name=config.ROLE_PENDING)
         for key in ("games_ok", "bday_ok"):  # перезаход — анкету проходить заново, все 3 шага

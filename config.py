@@ -63,6 +63,15 @@ def enabled(module: str) -> bool:
     return bool(MODULES.get(module, False))
 
 
+# --- Невидимки: бот их не замечает (без уровней, достижений, счётчиков; тегнуть нельзя) — cogs/ghosts.py ---
+GHOSTS = {int(x) for x in S.get("ghosts", []) if str(x).strip().isdigit()}
+
+
+def is_ghost(who) -> bool:
+    """who — участник, пользователь или ID."""
+    return (who if isinstance(who, int) else getattr(who, "id", 0)) in GHOSTS
+
+
 # --- Роли ---
 ROLE_BASE = _r["base"]                 # выдаётся, когда анкета заполнена
 ROLE_PENDING = _r["pending"]           # новичок до анкеты: видит только старт и правила
