@@ -16,6 +16,7 @@ import time
 
 import aiohttp
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 import ai
@@ -100,18 +101,25 @@ def meta_line(f: dict) -> str:
     return " · ".join(x for x in (f.get("year"), f.get("country"), f.get("duration")) if x)
 
 
-def card_embed(f: dict) -> discord.Embed:
+STYLE_NAMES = {"wide": "Широкая + все поля текстом", "compact": "Широкая + только описание",
+               "tall": "Высокая карточка"}
+
+
+async def card_style(guild_id: int) -> str:
+    """Вид карточек фильмов (выбирается командой /card-style): wide, compact или tall."""
+    style = await db.get_setting(guild_id, "film_card_style", "wide")
+    return style if style in film_card.STYLES else "wide"
+
+
+def card_embed(f: dict, style: str = "wide") -> discord.Embed:
+    """wide — описание и все поля текстом; compact — только описание; tall — всё на картинке, текстом лишь статус."""
     watched = f["status"] == "watched"
+    desc = (f["description"] or "*Описания пока нет — нажми «✏️ Заполнить / исправить».*")[:4000]
     e = discord.Embed(title=f"🎬 {f['title']}", colour=discord.Colour.green() if watched else COLOUR,
-                      description=(f["description"] or "*Описания пока нет — нажми «✏️ Заполнить / исправить».*")[:4000])
-    e.add_field(name="🎞️ Тип", value=", ".join(genre_label(k) for k in genre_keys(f)))
-    if f.get("year"):
-        e.add_field(name="📅 Год", value=f["year"])
-    if f.get("country"):
-        e.add_field(name="🌍 Страна", value=f["country"])
-    if f.get("duration"):
-        e.add_field(name="⏱️ Время", value=f["duration"])
-    if is_serial(f):
+                      description=None if style == "tall" else desc)
+    if style == "wide":
+        add_fields(e, f)
+    elif is_serial(f):
         e.add_field(name="📺 Серии", value=progress(f), inline=False)
     e.set_image(url="attachment://film.png")
     who = f"<@{f['author_id']}>" if f.get("author_id") else "—"
@@ -121,14 +129,26 @@ def card_embed(f: dict) -> discord.Embed:
     return e
 
 
-async def card_file(f: dict) -> discord.File:
+def add_fields(e: discord.Embed, f: dict):
+    e.add_field(name="🎞️ Тип", value=", ".join(genre_label(k) for k in genre_keys(f)))
+    if f.get("year"):
+        e.add_field(name="📅 Год", value=f["year"])
+    if f.get("country"):
+        e.add_field(name="🌍 Страна", value=f["country"])
+    if f.get("duration"):
+        e.add_field(name="⏱️ Время", value=f["duration"])
+    if is_serial(f):
+        e.add_field(name="📺 Серии", value=progress(f), inline=False)
+
+
+async def card_file(f: dict, style: str = "wide") -> discord.File:
     watched = f["status"] == "watched"
     badge = "ПОСМОТРЕЛИ" if watched else (f"ХОТЯТ ПОСМОТРЕТЬ ×{f['count']}" if f["count"] > 1 else "В ПОДБОРКЕ")
     if not watched and is_serial(f) and f.get("episodes_watched"):
         total = f.get("episodes_total")
         badge = f"СЕРИЯ {f['episodes_watched']} ИЗ {total}" if total else f"ПОСМОТРЕЛИ {f['episodes_watched']} СЕРИЙ"
     data = await asyncio.to_thread(film_card.render, f["title"], [GENRES[k][1] for k in genre_keys(f)],
-                                   meta_line(f), badge, f["poster"], watched, card_info(f))
+                                   meta_line(f), badge, f["poster"], watched, card_info(f), style)
     return discord.File(io.BytesIO(data), filename="film.png")
 
 
@@ -144,7 +164,7 @@ async def session_card(guild: discord.Guild, title: str, badge: str) -> tuple[di
     genres = [GENRES[k][1] for k in genre_keys(f)] if f else []
     data = await asyncio.to_thread(film_card.render, f["title"] if f else title, genres,
                                    meta_line(f) if f else "", badge, f["poster"] if f else None, False,
-                                   card_info(f) if f else None)
+                                   card_info(f) if f else None, await card_style(guild.id))
     return discord.File(io.BytesIO(data), filename="film.png"), f
 
 
@@ -155,13 +175,14 @@ async def update_card(guild: discord.Guild, film_id: int, new: bool = False):
     if not f or not channel or f["status"] == "planned":  # planned — фильм сеанса, без карточки в подборке
         return
     view = None if f["status"] == "watched" else FilmCardView(serial=is_serial(f))
+    style = await card_style(guild.id)
     if f["card_msg"] and not new:
         try:
             msg = await channel.fetch_message(f["card_msg"])
-            return await msg.edit(embed=card_embed(f), attachments=[await card_file(f)], view=view)
+            return await msg.edit(embed=card_embed(f, style), attachments=[await card_file(f, style)], view=view)
         except discord.HTTPException:
             pass
-    msg = await channel.send(embed=card_embed(f), file=await card_file(f), view=view)
+    msg = await channel.send(embed=card_embed(f, style), file=await card_file(f, style), view=view)
     await db.execute("UPDATE films SET card_msg=? WHERE id=?", (msg.id, film_id))
     await post_panel(None, channel)  # панель с кнопками — снова внизу
 
@@ -778,11 +799,57 @@ async def open_manage(interaction: discord.Interaction, mode: str):
     await interaction.response.send_message(view=ManageView(items, mode), ephemeral=True, delete_after=MENU_GONE)
 
 
+class ChooseStyleView(discord.ui.View):
+    def __init__(self, style: str):
+        super().__init__(timeout=600)
+        self.style = style
+
+    @discord.ui.button(label="Выбрать этот вид", emoji="✅", style=discord.ButtonStyle.success)
+    async def choose(self, interaction: discord.Interaction, _):
+        g = interaction.guild
+        await db.set_setting(g.id, "film_card_style", self.style)
+        rows = await db.fetchall("SELECT id FROM films WHERE guild_id=? AND card_msg IS NOT NULL AND status<>'planned'",
+                                 (g.id,))
+        await interaction.response.send_message(
+            f"✅ Вид карточек: **{STYLE_NAMES[self.style]}**. Перерисовываю карточки в подборке: {len(rows)} шт., "
+            "это займёт немного времени.", ephemeral=True, delete_after=60)
+        for (fid,) in rows:
+            try:
+                await update_card(g, fid)
+            except discord.HTTPException:
+                log.exception("Не перерисовалась карточка %s", fid)
+
+
 class Films(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         bot.add_view(WishlistView())
         bot.add_view(FilmCardView())
+
+    @app_commands.command(name="card-style", description="(Админ) Сравнить виды карточек фильмов и выбрать один")
+    @app_commands.describe(film="Фильм из подборки, на котором показать (пусто — любой)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def card_style_cmd(self, interaction: discord.Interaction, film: str | None = None):
+        g = interaction.guild
+        items = await films(g.id) + await films(g.id, "watched")
+        f = next((x for x in items if film and normalize(x["title"]) == normalize(film)), items[0] if items else None)
+        if not f:
+            return await interaction.response.send_message("В подборке пока нет фильмов — предложи хотя бы один",
+                                                           ephemeral=True, delete_after=GONE)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        now = await card_style(g.id)
+        for i, style in enumerate(film_card.STYLES, 1):
+            mark = " — сейчас выбран" if style == now else ""
+            await interaction.followup.send(f"**Вариант {i}. {STYLE_NAMES[style]}**{mark}", embed=card_embed(f, style),
+                                            file=await card_file(f, style), view=ChooseStyleView(style), ephemeral=True)
+
+    @card_style_cmd.autocomplete("film")
+    async def film_autocomplete(self, interaction: discord.Interaction, current: str):
+        items = await films(interaction.guild.id) + await films(interaction.guild.id, "watched")
+        cur = normalize(current)
+        return [app_commands.Choice(name=f["title"][:100], value=f["title"][:100])
+                for f in items if cur in normalize(f["title"])][:25]
 
 
 async def setup(bot: commands.Bot):

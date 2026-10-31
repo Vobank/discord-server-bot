@@ -104,8 +104,98 @@ def render_frame(title: str, genres: list[str], badge: str, poster: bytes | None
     return out.getvalue()
 
 
+def render_tall(title: str, genres: list[str], badge: str, poster: bytes | None, watched: bool, info: dict) -> bytes:
+    """Высокая карточка (1000×780): в чате Discord она крупнее, текст читается без клика.
+    Фон — космос из правой части рамки film_frame.png, крупные шрифты."""
+    from cogs.welcome_card import fit, inter
+    W2, H2 = 1000, 780
+    blue, soft, white, green = (120, 200, 255, 255), (205, 215, 240, 255), (255, 255, 255, 255), (61, 220, 132, 255)
+    edge = (61, 220, 132) if watched else (40, 140, 255)
+    if os.path.exists(FRAME):
+        art = Image.open(FRAME).convert("RGB").crop((1340, 20, 1942, 380))
+        scale = max(W2 / art.width, H2 / art.height)
+        art = art.resize((int(art.width * scale) + 1, int(art.height * scale) + 1), Image.LANCZOS)
+        bg = art.crop((0, 0, W2, H2)).filter(ImageFilter.GaussianBlur(5)).convert("RGBA")
+    else:
+        bg = background(random.randint(0, 9999)).resize((W2, H2)).convert("RGBA")
+    img = Image.new("RGBA", (W2, H2), (0, 0, 0, 0))
+    mask = Image.new("L", (W2, H2), 0)
+    ImageDraw.Draw(mask).rounded_rectangle((8, 8, W2 - 8, H2 - 8), radius=34, fill=255)
+    img.paste(bg, (0, 0), mask)
+    shade = Image.new("RGBA", (W2, H2), (0, 0, 0, 0))
+    ImageDraw.Draw(shade).rounded_rectangle((8, 8, W2 - 8, H2 - 8), radius=34, fill=(4, 8, 26, 150))
+    img.alpha_composite(shade)
+    glow = Image.new("RGBA", (W2, H2), (0, 0, 0, 0))
+    gd = ImageDraw.Draw(glow)
+    gd.rounded_rectangle((10, 10, W2 - 10, H2 - 10), radius=34, outline=(*edge, 255), width=6)
+    img.alpha_composite(glow.filter(ImageFilter.GaussianBlur(6)))
+    img.alpha_composite(glow)
+
+    # постер слева
+    pw, ph, px, py = 300, 450, 44, 44
+    box = Image.new("RGBA", (W2, H2), (0, 0, 0, 0))
+    ImageDraw.Draw(box).rounded_rectangle((px - 6, py - 6, px + pw + 6, py + ph + 6), radius=22,
+                                          outline=(*edge, 255), width=5)
+    img.alpha_composite(box.filter(ImageFilter.GaussianBlur(4)))
+    cover = cover_fit(poster, pw, ph).convert("RGBA") if poster else Image.new("RGBA", (pw, ph), (8, 12, 34, 255))
+    if not poster:
+        ImageDraw.Draw(cover).text((pw / 2, ph / 2), "КИНО", font=inter("Bold", 52), fill=(*GOLD, 255), anchor="mm")
+    m = Image.new("L", (pw, ph), 0)
+    ImageDraw.Draw(m).rounded_rectangle((0, 0, pw - 1, ph - 1), radius=18, fill=255)
+    img.paste(cover, (px, py), m)
+
+    d = ImageDraw.Draw(img)
+    x0, right = 380, W2 - 44
+    # плашки: тип и статус
+    status = "" if badge.startswith(("ХОТЯТ", "В ПОДБОРКЕ")) else badge
+    x = x0
+    for label in [*genres[:2], status]:
+        if not label:
+            continue
+        f = inter("Bold", 22)
+        w = d.textlength(label.upper(), font=f) + 36
+        d.rounded_rectangle((x, 46, x + w, 86), radius=20, fill=(14, 30, 80, 255),
+                            outline=green if watched and label == badge else blue, width=2)
+        d.text((x + w / 2, 66), label.upper(), font=f, fill=green if watched and label == badge else blue, anchor="mm")
+        x += w + 12
+    # название — до двух строк
+    y = 104
+    for line in wrap(d, title, inter("Bold", 52), right - x0, 2):
+        d.text((x0, y), line, font=inter("Bold", 52), fill=white)
+        y += 62
+    # год, страна, длительность
+    y = max(y + 18, 250)
+    for label, value in (("Год", info.get("year")), ("Страна", info.get("country")), ("Время", info.get("duration"))):
+        d.text((x0, y + 4), label, font=inter("Medium", 24), fill=blue)
+        text, f = fit(d, value or "—", "Bold", 30, right - x0 - 130)
+        d.text((x0 + 130, y), text, font=f, fill=white)
+        y += 54
+    # «хотят посмотреть»
+    by = 428
+    d.rounded_rectangle((x0, by, right, by + 66), radius=18, fill=(10, 20, 55, 230),
+                        outline=green if watched else blue, width=2)
+    d.text((x0 + 24, by + 33), "Уже посмотрели" if watched else "Хотят посмотреть", font=inter("Bold", 30),
+           fill=green if watched else white, anchor="lm")
+    d.text((right - 28, by + 33), "✓" if watched else str(info.get("count") or 1), font=inter("Bold", 38),
+           fill=green if watched else blue, anchor="rm")
+    # описание — внизу во всю ширину
+    dy = 524
+    d.rounded_rectangle((44, dy, right, H2 - 44), radius=20, fill=(8, 14, 40, 225), outline=(40, 90, 170, 255), width=2)
+    desc = info.get("description") or "Описания пока нет — его можно добавить кнопкой «Заполнить / исправить»."
+    for i, line in enumerate(wrap(d, desc, inter("Regular", 26), right - 44 - 48, 6)):
+        d.text((68, dy + 20 + i * 34), line, font=inter("Regular", 26), fill=soft)
+    out = io.BytesIO()
+    img.save(out, "PNG", optimize=True)
+    return out.getvalue()
+
+
+STYLES = ("wide", "compact", "tall")  # широкая с полями / широкая, текст покороче / высокая
+
+
 def render(title: str, genres: list[str], meta: str, badge: str, poster: bytes | None, watched: bool = False,
-           info: dict | None = None) -> bytes:
+           info: dict | None = None, style: str = "wide") -> bytes:
+    if style == "tall":
+        return render_tall(title, genres, badge, poster, watched, info or {})
     if os.path.exists(FRAME):
         return render_frame(title, genres, badge, poster, watched, info or {})
     # фон: размытая обложка (если есть) или фирменный ночной фон
