@@ -5,7 +5,10 @@
 просмотренное; начался сеанс с таким названием — фильм сам уходит в «Уже посмотрели».
 ИИ (ai.py) сам дозаполняет новые карточки: год, страну, длительность, описание и обложку.
 Ответы бота на кнопки видит только нажавший, и они исчезают сами.
-Сериалы, мультсериалы и аниме: бот помнит, сколько серий посмотрели и сколько осталось (кнопки на карточке)."""
+Сериалы, мультсериалы и аниме: бот помнит, сколько серий посмотрели и сколько осталось (кнопки на карточке).
+«➕ Предложить фильм» сразу открывает окно: название, что это и как добавить. «С ИИ» — бот показывает похожие
+варианты (ИИ может ошибиться), выбираешь точный; у сериала можно завести одну карточку или по карточке на сезон;
+потом выбираешь обложку из нескольких."""
 import asyncio
 import datetime
 import io
@@ -95,6 +98,24 @@ def progress(f: dict) -> str:
     if total:
         return f"{seen} из {total} · осталось {max(0, total - seen)}"
     return f"посмотрели {seen}" + (" · сколько всего — неизвестно" if seen else "")
+
+
+def plural(n: int, one: str, few: str, many: str) -> str:
+    if n % 10 == 1 and n % 100 != 11:
+        return one
+    return few if 2 <= n % 10 <= 4 and not 12 <= n % 100 <= 14 else many
+
+
+def serial_length(seasons: int | None, episodes: int | None, season: int | None = None) -> str:
+    """Чтобы не путать «2 сезон» и «2 сезона»: «Сезоны 1–3 · 24 серии», «Сезон 2 из 3 · 8 серий»."""
+    if season:
+        head = f"Сезон {season}" + (f" из {seasons}" if seasons else "")
+    elif seasons:
+        head = "1 сезон" if seasons == 1 else f"Сезоны 1–{seasons}"
+    else:
+        head = ""
+    eps = f"{episodes} {plural(episodes, 'серия', 'серии', 'серий')}" if episodes else ""
+    return " · ".join(x for x in (head, eps) if x)
 
 
 def meta_line(f: dict) -> str:
@@ -226,6 +247,8 @@ async def autofill(guild: discord.Guild, fid: int, overwrite: bool = False) -> s
             problem, info = f"не нашёл «{f['title']}» — проверь название", {}
     except ai.AIError as e:
         problem = str(e)
+    if key in SERIALS and (info.get("seasons") or info.get("episodes")):
+        info["duration"] = serial_length(info.get("seasons"), info.get("episodes"))
     updates = {}
     for k, limit in (("year", 20), ("country", 80), ("duration", 30), ("description", 1500)):
         value = (info.get(k) or "").strip()[:limit]
@@ -307,48 +330,255 @@ async def suggest(guild: discord.Guild, user: discord.abc.User, title: str, genr
 
 
 class SuggestModal(discord.ui.Modal):
-    film = discord.ui.TextInput(label="Название", placeholder="Например: Странный Томас", max_length=100)
-    year = discord.ui.TextInput(label="Год (если знаешь)", placeholder="2013", required=False, max_length=10)
-    country = discord.ui.TextInput(label="Страна (если знаешь)", placeholder="США, Великобритания",
-                                   required=False, max_length=80)
-    duration = discord.ui.TextInput(label="Длительность (если знаешь)", placeholder="1 ч 33 мин",
-                                    required=False, max_length=30)
-    description = discord.ui.TextInput(label="Описание (можно потом)", style=discord.TextStyle.paragraph,
-                                       required=False, max_length=1500,
-                                       placeholder="О чём фильм — можно скопировать с Кинопоиска")
+    """Всё в одном окне: название, что это (фильм, сериал…), как добавить (с ИИ или как написал), год и длина."""
 
-    def __init__(self, genres: list[str]):
+    def __init__(self):
         super().__init__(title="🍿 Предложить фильм")
-        self.genres = genres
+        self.film = discord.ui.TextInput(placeholder="Например: Первый отдел", max_length=100)
+        self.add_item(discord.ui.Label(text="Название", component=self.film))
+        self.kind = discord.ui.Select(options=[discord.SelectOption(label=name, emoji=emoji, value=key,
+                                                                    default=key == "movie")
+                                               for key, (emoji, name) in TYPES.items()])
+        self.add_item(discord.ui.Label(text="Что это", component=self.kind))
+        smart = ai.ready()
+        self.mode = discord.ui.Select(options=[
+            discord.SelectOption(label="Найти с ИИ", emoji="🤖", value="ai", default=smart,
+                                 description="Покажу похожие варианты — выберешь точный, карточку заполню сам"),
+            discord.SelectOption(label="Добавить как написал", emoji="✅", value="plain", default=not smart,
+                                 description="Без ИИ — карточку можно дозаполнить потом")])
+        self.add_item(discord.ui.Label(text="Как добавить", component=self.mode))
+        self.year = discord.ui.TextInput(required=False, max_length=10, placeholder="2013")
+        self.add_item(discord.ui.Label(text="Год (если знаешь)", component=self.year))
+        self.length = discord.ui.TextInput(required=False, max_length=40,
+                                           placeholder="1 ч 33 мин   или   3 сезона, 24 серии")
+        self.add_item(discord.ui.Label(text="Длительность или сезоны и серии", component=self.length,
+                                       description="Если знаешь. С ИИ — он уточнит сам"))
 
     async def on_submit(self, interaction: discord.Interaction):
+        kind = (self.kind.values or ["movie"])[0]
+        hints = {"year": self.year.value.strip(), "duration": self.length.value.strip()}
+        if (self.mode.values or ["plain"])[0] == "ai" and ai.ready():
+            return await ai_search(interaction, self.film.value, kind, hints)
         await interaction.response.defer(ephemeral=True, thinking=True)
-        text, fid = await suggest(interaction.guild, interaction.user, self.film.value, self.genres,
-                                  {"year": self.year.value, "country": self.country.value,
-                                   "duration": self.duration.value, "description": self.description.value})
-        if fid:
-            await update_card(interaction.guild, fid)
-            if text.startswith("✅") and ai.ready():
-                autofill_later(interaction.guild, fid)
-                text += "\n🤖 Год, описание и обложку ИИ допишет сам примерно через минуту."
-            else:
-                text += "\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» на карточке."
-        await done(interaction, text, 30)
+        await done(interaction, await add_plain(interaction, self.film.value, kind, hints), 30)
 
 
-class GenrePickView(discord.ui.View):
-    """Шаг 1: что это — фильм, сериал, мультфильм, мультсериал, аниме или аниме-фильм → шаг 2: название."""
+async def add_plain(interaction: discord.Interaction, title: str, kind: str, hints: dict) -> str:
+    """Добавить ровно как написал, без ИИ."""
+    text, fid = await suggest(interaction.guild, interaction.user, title, [kind], hints)
+    if fid:
+        if eps := re.search(r"(\d+)\s*сер", hints.get("duration") or ""):
+            await db.execute("UPDATE films SET episodes_total=? WHERE id=? AND episodes_total IS NULL",
+                             (int(eps.group(1)), fid))
+        await update_card(interaction.guild, fid)
+        text += "\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» на карточке."
+    return text
 
-    def __init__(self, then):
-        super().__init__(timeout=600)
-        self.then = then
-        self.pick.options = [discord.SelectOption(label=name, emoji=emoji, value=key)
-                             for key, (emoji, name) in TYPES.items()]
 
-    @discord.ui.select(placeholder="🎞️ Что предлагаешь?", min_values=1, max_values=1,
-                       options=[discord.SelectOption(label="-")])
+# ---------- предложить с ИИ: выбрать точный вариант, сезоны и обложку ----------
+KIND_KEYS = {name.lower(): key for key, (_, name) in TYPES.items()}
+
+
+def vanish(interaction: discord.Interaction, after: int = 60):
+    """Убрать сообщение-меню (видно только нажавшему) через after секунд."""
+    async def later():
+        await asyncio.sleep(after)
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+    asyncio.create_task(later())
+
+
+def waiting(text: str) -> discord.Embed:
+    return discord.Embed(title="⏳ Минутку…", description=text + "\n\n*Не закрывай — ответ появится здесь.*",
+                         colour=COLOUR)
+
+
+def candidate_line(c: dict) -> str:
+    kind = c["kind"] or "фильм"
+    length = serial_length(c["seasons"], c["episodes"]) if KIND_KEYS.get(kind.lower()) in SERIALS else ""
+    return " · ".join(x for x in (kind, c["country"], length, c["note"]) if x)
+
+
+async def ai_search(interaction: discord.Interaction, query: str, kind: str, hints: dict):
+    query = re.sub(r"\s+", " ", query).strip()[:100]
+    if len(normalize(query)) < 2:
+        return await interaction.response.send_message("⚠️ Напиши нормальное название фильма 🙂", ephemeral=True,
+                                                       delete_after=GONE)
+    await interaction.response.send_message(
+        embed=waiting(f"🤖 Ищу «**{query}**» — 10–30 секунд. Покажу похожие варианты, выберешь точный."),
+        ephemeral=True)
+    problem, items = "", []
+    try:
+        items = await ai.film_candidates(query, TYPES[kind][1].lower(),
+                                         ", ".join(f"{k}: {v}" for k, v in hints.items() if v))
+    except ai.AIError as e:
+        problem = str(e)
+    view = PickFilmView(query, kind, hints, items)
+    await interaction.edit_original_response(embed=view.embed(problem), view=view)
+
+
+class PickFilmView(discord.ui.View):
+    """Варианты от ИИ: выбрать точный или добавить как написал."""
+
+    def __init__(self, query: str, kind: str, hints: dict, items: list[dict]):
+        super().__init__(timeout=MENU_GONE)
+        self.query, self.kind, self.hints, self.items = query, kind, hints, items
+        if items:
+            self.pick.options = [
+                discord.SelectOption(label=(f"{c['title']} ({c['year']})" if c["year"] else c["title"])[:100],
+                                     value=str(i), description=candidate_line(c)[:100] or None,
+                                     emoji=TYPES.get(KIND_KEYS.get(c["kind"].lower(), ""), ("🎬",))[0])
+                for i, c in enumerate(items)]
+        else:
+            self.remove_item(self.pick)
+
+    def embed(self, problem: str = "") -> discord.Embed:
+        if not self.items:
+            text = f"😕 Не нашёл ничего похожего на «**{self.query}**»" + (f" ({problem})" if problem else "") + \
+                   ".\nМожно добавить как написал — кнопкой ниже."
+            return discord.Embed(title="🤖 Поиск фильма", description=text, colour=COLOUR)
+        lines = [f"**{i}. {c['title']}**" + (f" ({c['year']})" if c["year"] else "")
+                 + (f" — *{c['original']}*" if c["original"] and c["original"] != c["title"] else "")
+                 + f"\n　{candidate_line(c)}" for i, c in enumerate(self.items, 1)]
+        return discord.Embed(title=f"🤖 Что нашёл по «{self.query}»",
+                             description="\n".join(lines) + "\n\n👇 **Выбери точный вариант** — ИИ может ошибаться, "
+                                                            "поэтому решаешь ты.", colour=COLOUR)
+
+    @discord.ui.select(placeholder="🎯 Какой именно?", options=[discord.SelectOption(label="-")])
     async def pick(self, interaction: discord.Interaction, select):
-        await self.then(interaction, select.values)
+        c = self.items[int(select.values[0])]
+        kind = KIND_KEYS.get(c["kind"].lower(), self.kind)
+        await interaction.response.edit_message(
+            embed=waiting(f"🤖 Уточняю «**{c['title']}**» по Википедии: описание, сезоны и серии — 10–30 секунд."),
+            view=None)
+        try:
+            info = await ai.film_info(c["title"], TYPES[kind][1].lower(), c["wiki_ru"])
+        except ai.AIError:
+            info = {}
+        if not info.get("found"):
+            info = {}
+        c = c | {"seasons": info.get("seasons") or c["seasons"], "episodes": info.get("episodes") or c["episodes"]}
+        if kind in SERIALS and (c["seasons"] or 0) >= 2:
+            view = SeasonsView(c, kind, info)
+            return await interaction.edit_original_response(embed=view.embed(), view=view)
+        await add_chosen(interaction, c, kind, info, split=False)
+
+    @discord.ui.button(label="Нет нужного — добавить как написал", emoji="✏️", row=1)
+    async def plain(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(embed=waiting("Добавляю…"), view=None)
+        text = await add_plain(interaction, self.query, self.kind, self.hints)
+        await interaction.edit_original_response(embed=discord.Embed(description=text, colour=COLOUR))
+        vanish(interaction, 30)
+
+    @discord.ui.button(label="Отмена", emoji="✖️", row=1)
+    async def cancel(self, interaction: discord.Interaction, _):
+        await interaction.response.defer()
+        await interaction.delete_original_response()
+
+
+class SeasonsView(discord.ui.View):
+    """У сериала несколько сезонов: одна карточка на весь сериал или по карточке на каждый сезон."""
+
+    def __init__(self, c: dict, kind: str, info: dict):
+        super().__init__(timeout=MENU_GONE)
+        self.c, self.kind, self.info = c, kind, info
+
+    def embed(self) -> discord.Embed:
+        n = self.c["seasons"]
+        return discord.Embed(
+            title=f"📺 {self.c['title']} — {n} {plural(n, 'сезон', 'сезона', 'сезонов')}",
+            description="Как добавить в подборку?\n\n"
+                        f"📺 **Одной карточкой** — весь сериал ({serial_length(n, self.c['episodes'])})\n"
+                        f"🗂️ **По сезонам** — {n} {plural(n, 'карточка', 'карточки', 'карточек')}: "
+                        f"«{self.c['title']} — 1 сезон», «… — 2 сезон» и так далее, у каждой свои серии",
+            colour=COLOUR)
+
+    @discord.ui.button(label="Одной карточкой", emoji="📺", style=discord.ButtonStyle.primary)
+    async def whole(self, interaction: discord.Interaction, _):
+        await add_chosen(interaction, self.c, self.kind, self.info, split=False)
+
+    @discord.ui.button(label="По сезонам", emoji="🗂️", style=discord.ButtonStyle.primary)
+    async def split(self, interaction: discord.Interaction, _):
+        await add_chosen(interaction, self.c, self.kind, self.info, split=True)
+
+
+async def add_chosen(interaction: discord.Interaction, c: dict, kind: str, info: dict, split: bool):
+    """Выбрали вариант (info — данные от ИИ): заводим карточку (или карточки сезонов), потом — выбор обложки."""
+    wait = waiting(f"🖼️ Добавляю «**{c['title']}**» и ищу обложки — 10–20 секунд.")
+    if interaction.response.is_done():
+        await interaction.edit_original_response(embed=wait, view=None)
+    else:
+        await interaction.response.edit_message(embed=wait, view=None)
+    g, user = interaction.guild, interaction.user
+    seasons, episodes = c["seasons"], c["episodes"]
+    base = {"year": info.get("year") or c["year"], "country": info.get("country") or c["country"],
+            "description": info.get("description"),
+            "duration": serial_length(seasons, episodes) if kind in SERIALS else info.get("duration")}
+    if split and seasons:
+        known = {s["season"]: s for s in info.get("seasons_list") or []}
+        parts = [(f"{c['title']} — {n} сезон",
+                  base | {"year": known.get(n, {}).get("year") or base["year"],
+                          "duration": serial_length(seasons, known.get(n, {}).get("episodes"), season=n)},
+                  known.get(n, {}).get("episodes"))
+                 for n in range(1, seasons + 1)]
+    else:
+        parts = [(c["title"], base, episodes)]
+    texts, fids, new = [], [], []
+    for title, details, eps in parts:
+        text, fid = await suggest(g, user, title, [kind], details)
+        texts.append(text)
+        if fid:
+            fids.append(fid)
+            if text.startswith("✅"):
+                new.append(fid)
+                if eps:
+                    await db.execute("UPDATE films SET episodes_total=? WHERE id=?", (eps, fid))
+    covers = []
+    if new:
+        info.setdefault("wiki_ru", c["wiki_ru"])
+        covers = [await asyncio.to_thread(film_card.shrink_poster, d)
+                  for d in await ai.posters(c["title"], info, drawn=2)]
+        if covers:
+            for fid in new:
+                await db.execute("UPDATE films SET poster=? WHERE id=? AND poster IS NULL", (covers[0], fid))
+    for fid in fids:
+        await update_card(g, fid)
+    summary = "\n".join(texts[:8]) + (f"\n… и ещё {len(texts) - 8}" if len(texts) > 8 else "")
+    if len(covers) < 2:
+        await interaction.edit_original_response(embed=discord.Embed(description=summary, colour=COLOUR))
+        return vanish(interaction, 30)
+    embeds = [discord.Embed(description=summary + "\n\n🖼️ **Выбери обложку** — сейчас стоит №1.\n\n**№1**",
+                            colour=COLOUR).set_image(url="attachment://cover1.jpg")]
+    embeds += [discord.Embed(description=f"**№{n}**", colour=COLOUR).set_image(url=f"attachment://cover{n}.jpg")
+               for n in range(2, len(covers) + 1)]
+    await interaction.edit_original_response(embeds=embeds, view=CoverView(new, covers), attachments=[
+        discord.File(io.BytesIO(d), filename=f"cover{n}.jpg") for n, d in enumerate(covers, 1)])
+
+
+class CoverView(discord.ui.View):
+    """Несколько обложек: нажал номер — она встаёт на карточку (у сериала по сезонам — на все карточки)."""
+
+    def __init__(self, fids: list[int], covers: list[bytes]):
+        super().__init__(timeout=MENU_GONE)
+        self.fids, self.covers = fids, covers
+        for n in range(1, len(covers) + 1):
+            button = discord.ui.Button(label=f"Обложка {n}", emoji="🖼️",
+                                       style=discord.ButtonStyle.success if n == 1 else discord.ButtonStyle.primary)
+            button.callback = self.choose(n)
+            self.add_item(button)
+
+    def choose(self, n: int):
+        async def callback(interaction: discord.Interaction):
+            await interaction.response.edit_message(embeds=[waiting("Ставлю обложку…")], attachments=[], view=None)
+            for fid in self.fids:
+                await db.execute("UPDATE films SET poster=? WHERE id=?", (self.covers[n - 1], fid))
+                await update_card(interaction.guild, fid)
+            await interaction.edit_original_response(embeds=[discord.Embed(
+                description=f"✅ Обложка №{n} поставлена — карточка в подборке обновлена", colour=COLOUR)])
+            vanish(interaction, 20)
+        return callback
 
 
 # ---------- заполнить / исправить карточку ----------
@@ -595,15 +825,7 @@ class WishlistView(discord.ui.View):
 
     @discord.ui.button(label="Предложить фильм", emoji="➕", style=discord.ButtonStyle.success, custom_id="films:add")
     async def add(self, interaction: discord.Interaction, _):
-        async def then(i: discord.Interaction, genres: list[str]):
-            await i.response.send_modal(SuggestModal(genres))
-            try:  # шаг 1 больше не нужен
-                await interaction.delete_original_response()
-            except discord.HTTPException:
-                pass
-        await interaction.response.send_message("**Шаг 1.** Что предлагаешь: фильм, сериал, мультфильм, "
-                                                "мультсериал, аниме или аниме-фильм? 👇",
-                                                view=GenrePickView(then), ephemeral=True, delete_after=MENU_GONE)
+        await interaction.response.send_modal(SuggestModal())
 
     @discord.ui.button(label="Весь список", emoji="📋", custom_id="films:list")
     async def full_list(self, interaction: discord.Interaction, _):
@@ -621,7 +843,8 @@ async def post_panel(bot, channel: discord.TextChannel):
     await channel.send(embed=discord.Embed(
         title="🍿 Что посмотрим?",
         description=(
-            "Жми **➕ Предложить фильм**: выбери, что это (фильм, сериал, аниме…), и напиши название — остальное по желанию.\n"
+            "Жми **➕ Предложить фильм** и напиши название. **🤖 С ИИ** бот покажет похожие варианты — выбираешь "
+            "точный, сериал можно добавить целиком или по сезонам, потом выбираешь обложку.\n"
             "У каждого фильма появится **карточка** с обложкой. Хочешь тот же фильм — жми на ней **👍 Тоже хочу**.\n"
             "Обложку, описание, год и прочее можно добавить кнопкой **✏️ Заполнить / исправить** "
             f"(автор, Администрация и {config.ROLE_CINEMA}).\n"

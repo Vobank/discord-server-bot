@@ -1,13 +1,20 @@
-"""Достижения: считаем активность и выдаём роли из config.ACHIEVEMENTS. Прогресс — /achievements."""
+"""Достижения: считаем активность и выдаём роли из config.ACHIEVEMENTS. Прогресс — /achievements.
+У каждого достижения свой значок (assets/badges, cogs/badge_art.py): он в объявлении о достижении и в сетке
+/achievements (не полученные — серые). Админ меняет значок командой /badge: свой файл или новый от ИИ."""
+import asyncio
 import datetime
+import io
+import re
 import time
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
+import ai
 import config
 import db
+from cogs import badge_art
 
 NIGHT_COOLDOWN = 10  # сек — чтобы «Полуночника» не нафармили спамом
 
@@ -60,15 +67,100 @@ async def check(member: discord.Member, only: set[str] | None = None):
             continue
         await member.add_roles(role, reason=f"Достижение: {ach['desc']}")
         if channel and ach["stat"] != "days":  # «Старожил» — молча, иначе на запуске будет спам
-            await channel.send(embed=discord.Embed(
-                description=f"🏆 {member.mention} получил достижение **{ach['role']}**\n*{ach['desc']}*",
-                colour=discord.Colour(ach["colour"])))
+            embed = discord.Embed(description=f"🏆 {member.mention} получил достижение **{ach['role']}**\n*{ach['desc']}*",
+                                  colour=discord.Colour(ach["colour"]))
+            data = await badge(member.guild.id, ach)
+            if data:
+                embed.set_thumbnail(url="attachment://badge.png")
+            await channel.send(embed=embed, files=[badge_file(data)] if data else [])
 
 
 async def bump(member: discord.Member, key: str, delta: int = 1):
     """Для других модулей: +delta к счётчику и проверка достижений."""
     await add_stat(member.guild.id, member.id, key, delta)
     await check(member, {key})
+
+
+# ---------- значки ----------
+BADGE_STYLE = ("game achievement badge icon, ornate golden shield emblem with spread golden wings, small pink gem "
+               "at the bottom, glossy 3D render, centered, symmetrical, isolated on plain flat dark purple background, "
+               "soft glow, no text, no letters")
+
+
+def badge_key(ach: dict) -> str:
+    return f"{ach['stat']}_{ach['need']}"
+
+
+def plain_name(name: str) -> str:
+    """Название роли без эмодзи в начале — для подписи на картинке."""
+    return re.sub(r"^\W+", "", name).strip() or name
+
+
+async def badge(guild_id: int, ach: dict) -> bytes | None:
+    """Значок: заменённый админом (в базе) или стандартный из assets/badges."""
+    row = await db.fetchone("SELECT data FROM badges WHERE guild_id=? AND key=?", (guild_id, badge_key(ach)))
+    return row[0] if row else badge_art.default_file(badge_key(ach))
+
+
+async def draw_badge(ach: dict, idea: str = "") -> bytes | None:
+    """Новый значок от ИИ: Gemini придумывает символ, Workers AI рисует, фон вырезаем."""
+    symbol = await ai.ask(
+        f"Значок достижения на Discord-сервере: «{plain_name(ach['role'])}» — {ach['desc']}."
+        + (f" Пожелание: {idea[:200]}." if idea else "")
+        + " Опиши одной короткой фразой на английском, что нарисовать в центре щита и какого цвета эмаль щита, "
+          "например: golden headphones in the center, teal enamel shield. Только эту фразу.")
+    data = await ai.image(f"{BADGE_STYLE}, {symbol.strip().strip('.')[:200]}")
+    return await asyncio.to_thread(badge_art.cut_out, data) if ai.is_image(data) else None
+
+
+def badge_file(data: bytes, name: str = "badge.png") -> discord.File:
+    return discord.File(io.BytesIO(data), filename=name)
+
+
+class BadgeView(discord.ui.View):
+    """Предпросмотр нового значка: поставить, нарисовать ещё (ИИ) или вернуть стандартный."""
+
+    def __init__(self, ach: dict, data: bytes, idea: str | None):
+        super().__init__(timeout=600)
+        self.ach, self.data, self.idea = ach, data, idea
+        if idea is None:  # свой файл — «ещё вариант» не нужен
+            self.remove_item(self.again)
+
+    async def finish(self, interaction: discord.Interaction, text: str):
+        await interaction.edit_original_response(content=text, attachments=[], view=None)
+        await asyncio.sleep(20)
+        try:
+            await interaction.delete_original_response()
+        except discord.HTTPException:
+            pass
+
+    @discord.ui.button(label="Поставить", emoji="✅", style=discord.ButtonStyle.success)
+    async def apply(self, interaction: discord.Interaction, _):
+        await interaction.response.defer()
+        await db.execute("INSERT OR REPLACE INTO badges (guild_id, key, data) VALUES (?,?,?)",
+                         (interaction.guild.id, badge_key(self.ach), self.data))
+        await self.finish(interaction, f"✅ Значок **{self.ach['role']}** поставлен")
+
+    @discord.ui.button(label="Нарисовать ещё", emoji="🎲", style=discord.ButtonStyle.primary)
+    async def again(self, interaction: discord.Interaction, _):
+        await interaction.response.edit_message(content="🎨 Рисую ещё вариант — секунд 10–20…", view=None)
+        try:
+            data = await draw_badge(self.ach, self.idea or "")
+        except ai.AIError as e:
+            data, problem = None, str(e)
+        else:
+            problem = "ИИ прислал не картинку"
+        if data:
+            self.data = data
+        await interaction.edit_original_response(
+            content=f"Новый значок для **{self.ach['role']}** — поставить?" if data else f"⚠️ {problem}",
+            attachments=[badge_file(self.data)], view=self)
+
+    @discord.ui.button(label="Вернуть стандартный", emoji="↩️")
+    async def reset(self, interaction: discord.Interaction, _):
+        await interaction.response.defer()
+        await db.execute("DELETE FROM badges WHERE guild_id=? AND key=?", (interaction.guild.id, badge_key(self.ach)))
+        await self.finish(interaction, f"↩️ У **{self.ach['role']}** снова стандартный значок")
 
 
 def bar(value: int, need: int, width: int = 10) -> str:
@@ -187,7 +279,46 @@ class Achievements(commands.Cog):
         embed.set_thumbnail(url=member.display_avatar.url)
         embed.set_footer(text=f"Получено {got} из {len(config.ACHIEVEMENTS)} · серия: "
                               f"{values.get('streak', 0)} дн. подряд")
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.defer()
+        items = [(await badge(member.guild.id, ach), plain_name(ach["role"]), values.get(ach["stat"], 0) >= ach["need"])
+                 for ach in config.ACHIEVEMENTS]
+        files = []
+        if any(data for data, *_ in items):
+            files = [badge_file(await asyncio.to_thread(badge_art.grid, items), "badges.png")]
+            embed.set_image(url="attachment://badges.png")
+        await interaction.followup.send(embed=embed, files=files)
+
+    @app_commands.command(name="badge", description="(Админ) Поменять значок достижения: свой файл или новый от ИИ")
+    @app_commands.describe(achievement="Какое достижение", picture="Своя картинка (не выбрал — нарисует ИИ)",
+                           idea="Что нарисовать на значке — для ИИ (можно не писать)")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.guild_only()
+    async def badge_cmd(self, interaction: discord.Interaction, achievement: str,
+                        picture: discord.Attachment | None = None, idea: str | None = None):
+        ach = next((a for a in config.ACHIEVEMENTS if badge_key(a) == achievement), None)
+        if not ach:
+            return await interaction.response.send_message("Нет такого достижения — выбери из списка",
+                                                           ephemeral=True, delete_after=15)
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            if picture:
+                raw = await picture.read()
+                data = await asyncio.to_thread(badge_art.cut_out, raw) if ai.is_image(raw) else None
+            else:
+                data = await draw_badge(ach, idea or "")
+        except ai.AIError as e:
+            return await interaction.followup.send(f"⚠️ {e}", ephemeral=True)
+        if not data:
+            return await interaction.followup.send("⚠️ Не получилось открыть картинку — попробуй другую", ephemeral=True)
+        view = BadgeView(ach, data, None if picture else (idea or ""))
+        await interaction.followup.send(f"Новый значок для **{ach['role']}** — поставить?", file=badge_file(data),
+                                        view=view, ephemeral=True)
+
+    @badge_cmd.autocomplete("achievement")
+    async def badge_autocomplete(self, interaction: discord.Interaction, current: str):
+        cur = current.lower()
+        return [app_commands.Choice(name=f"{plain_name(a['role'])} — {a['desc']}"[:100], value=badge_key(a))
+                for a in config.ACHIEVEMENTS if cur in f"{a['role']} {a['desc']}".lower()][:25]
 
 
 async def setup(bot: commands.Bot):

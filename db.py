@@ -78,6 +78,10 @@ CREATE TABLE IF NOT EXISTS ghost_backup (
     guild_id INTEGER, user_id INTEGER, roles TEXT, nick TEXT,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS badges (
+    guild_id INTEGER, key TEXT, data BLOB,
+    PRIMARY KEY (guild_id, key)
+);
 CREATE TABLE IF NOT EXISTS song_picks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     guild_id INTEGER, title TEXT, url TEXT, duration INTEGER, thumbnail TEXT, author TEXT,
