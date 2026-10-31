@@ -3,7 +3,7 @@
 «Опубликовать». Под каждым постом кнопки «💡 Предложить улучшение» и «💬 Другое»: написанное видят только
 админы — в #📮・предложения (категория админки), там можно ответить человеку в ЛС от имени бота.
 Пост можно подготовить и файлом: runtime/update_post.json ({"added": [...], "changed": [...], "planned": [...],
-"intro": "…"}) — бот опубликует его сам в течение 20 секунд (так обновления публикует разработчик)."""
+"intro": "…", "number": 1 — если нужен свой номер}) — бот опубликует его сам в течение 20 секунд (так обновления публикует разработчик)."""
 import datetime
 import json
 import logging
@@ -42,37 +42,49 @@ def post_embed(number: int, post: dict) -> discord.Embed:
     return e
 
 
+async def remembered(guild: discord.Guild, key: str, name: str) -> discord.TextChannel | None:
+    """Канал по запомненному id (переименование не мешает), иначе по названию — и запоминаем его id."""
+    cid = await db.get_setting(guild.id, key)
+    channel = guild.get_channel(int(cid)) if cid else None
+    channel = channel or discord.utils.get(guild.text_channels, name=name)
+    if channel and str(channel.id) != cid:
+        await db.set_setting(guild.id, key, str(channel.id))
+    return channel
+
+
 async def updates_channel(guild: discord.Guild) -> discord.TextChannel | None:
-    """#🤖・обновления в категории «информация»: читают все, пишет только бот."""
-    channel = discord.utils.get(guild.text_channels, name=config.CH_UPDATES)
-    if channel:
+    """#обновления в категории «информация»: читают все, пишет только бот."""
+    if channel := await remembered(guild, "updates_channel", config.CH_UPDATES):
         return channel
     category = discord.utils.find(lambda c: config.CAT_INFO in c.name, guild.categories)
     over = {guild.default_role: discord.PermissionOverwrite(send_messages=False, create_public_threads=False,
                                                             create_private_threads=False, add_reactions=True),
             guild.me: discord.PermissionOverwrite(send_messages=True, embed_links=True, attach_files=True)}
-    return await guild.create_text_channel(config.CH_UPDATES, category=category, overwrites=over,
-                                           topic="Что нового на сервере — пишет Дворецкий",
-                                           reason="Канал обновлений")
+    channel = await guild.create_text_channel(config.CH_UPDATES, category=category, overwrites=over,
+                                              topic="Что нового на сервере — пишет Дворецкий",
+                                              reason="Канал обновлений")
+    await db.set_setting(guild.id, "updates_channel", str(channel.id))
+    return channel
 
 
 async def feedback_channel(guild: discord.Guild) -> discord.TextChannel | None:
     """#📮・предложения в категории админки — видят только админы (права как у категории)."""
-    channel = discord.utils.get(guild.text_channels, name=config.CH_FEEDBACK)
-    if channel:
+    if channel := await remembered(guild, "feedback_channel", config.CH_FEEDBACK):
         return channel
     category = discord.utils.find(lambda c: config.CAT_ADMIN in c.name, guild.categories)
     if not category:
         return None
-    return await category.create_text_channel(config.CH_FEEDBACK, reason="Предложения из обновлений",
-                                              topic="Предложения и сообщения из #🤖・обновления — видят только админы")
+    channel = await category.create_text_channel(config.CH_FEEDBACK, reason="Предложения из обновлений",
+                                                 topic="Предложения и сообщения из #обновления — видят только админы")
+    await db.set_setting(guild.id, "feedback_channel", str(channel.id))
+    return channel
 
 
 async def publish(guild: discord.Guild, post: dict) -> discord.Message | None:
     channel = await updates_channel(guild)
     if not channel:
         return None
-    number = int(await db.get_setting(guild.id, "update_counter", "0")) + 1
+    number = int(post.get("number") or 0) or int(await db.get_setting(guild.id, "update_counter", "0")) + 1
     msg = await channel.send(embed=post_embed(number, post), view=UpdateButtons())
     await db.set_setting(guild.id, "update_counter", str(number))
     return msg
