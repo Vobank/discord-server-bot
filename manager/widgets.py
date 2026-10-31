@@ -4,7 +4,9 @@
 Правила: цвета — только через theme.C(...), отступы — через px(...), шрифты — theme.font(...).
 Контролы сами подбирают стиль под фон родителя (страница, карточка или вложенный блок).
 """
+import os
 import queue
+import re
 import subprocess
 import threading
 import tkinter as tk
@@ -635,12 +637,84 @@ class ColorButton(tk.Frame):
                 self.command(self.value)
 
 
+# ---------- цветные эмодзи в таблицах ----------
+# Tk на Windows рисует эмодзи только чёрным контуром, поэтому в таблицах они — цветные картинки (Pillow + Segoe UI
+# Emoji) в первой колонке строки. Составные эмодзи (❤️‍🩹, 🙋‍♂️) Pillow без raqm не склеивает — берём основной значок.
+EMOJI_FONT = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts", "seguiemj.ttf")
+EMOJI_CHAR = "[\U0001F000-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\u2190-\u21FF\u2300-\u23FF\u3030\u303D\u00A9\u00AE\u2122]"
+EMOJI_LEAD = re.compile(f"^((?:{EMOJI_CHAR}(?:\uFE0F|\u200D|[\U0001F3FB-\U0001F3FF]|{EMOJI_CHAR})*)+)\\s*")
+ICON = 18        # размер эмодзи в строке, px до масштабирования
+_tiles: dict = {}
+
+
+def split_emoji(text) -> tuple[str, str]:
+    """«🎧 Тусовщик» → ("🎧", "Тусовщик"); без эмодзи в начале → ("", text)."""
+    m = EMOJI_LEAD.match(str(text or ""))
+    return (m.group(1), str(text)[m.end():]) if m else ("", str(text or ""))
+
+
+def emoji_tile(emoji: str, size: int):
+    """Цветной значок эмодзи (PIL, size×size) или None."""
+    key = (emoji[:1], size)
+    if key not in _tiles:
+        tile = None
+        try:
+            from PIL import Image, ImageDraw, ImageFont
+            if os.path.exists(EMOJI_FONT):
+                big = size * 4
+                f = ImageFont.truetype(EMOJI_FONT, big)
+                img = Image.new("RGBA", (big * 2, big * 2), (0, 0, 0, 0))
+                ImageDraw.Draw(img).text((big // 2, big // 2), emoji[:1], font=f, embedded_color=True)
+                box = img.getbbox()
+                if box:
+                    img = img.crop(box)
+                    side = max(img.size)
+                    square = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+                    square.alpha_composite(img, ((side - img.width) // 2, (side - img.height) // 2))
+                    tile = square.resize((size, size), Image.LANCZOS)
+        except Exception:
+            tile = None
+        _tiles[key] = tile
+    return _tiles[key]
+
+
+def row_icon(colour: str | None, emojis: list[str], size: int):
+    """Картинка для начала строки: квадратик цвета (если есть) и цветные эмодзи через небольшой отступ."""
+    try:
+        from PIL import Image, ImageDraw, ImageTk
+    except ImportError:
+        return None, 0
+    parts = []
+    if colour:
+        try:
+            big = size * 4
+            sw = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+            ImageDraw.Draw(sw).rounded_rectangle((big // 8, big // 8, big - big // 8, big - big // 8), radius=big // 5,
+                                                 fill=colour, outline=C("border"), width=4)
+            parts.append(sw.resize((size, size), Image.LANCZOS))
+        except ValueError:
+            pass
+    parts += [t for e in emojis if (t := emoji_tile(e, size))]
+    if not parts:
+        return None, 0
+    gap = max(2, size // 3)
+    width = len(parts) * size + (len(parts) - 1) * gap
+    img = Image.new("RGBA", (width, size), (0, 0, 0, 0))
+    for i, p in enumerate(parts):
+        img.alpha_composite(p, (i * (size + gap), 0))
+    return ImageTk.PhotoImage(img), width
+
+
 # ---------- таблица и редактор списков ----------
 class Table(tk.Frame):
-    """Таблица: columns — [(ключ, заголовок, ширина), …]. Строки — кортежи значений."""
+    """Таблица: columns — [(ключ, заголовок, ширина), …]. Строки — кортежи значений.
+    Эмодзи показываются цветными в начале строки: колонки, где только эмодзи, прячутся в эту картинку,
+    а эмодзи в начале первой текстовой колонки переезжает туда же. colour_of(i) — квадратик цвета строки."""
 
     def __init__(self, parent, columns, height: int = 6, on_double=None, on_select=None):
         super().__init__(parent, bg=C("border"))
+        self.colour_of = None
+        self._icons = []
         inner = tk.Frame(self, bg=C("card"))
         inner.pack(fill="both", expand=True, padx=1, pady=1)
         self.columns = columns
@@ -661,8 +735,34 @@ class Table(tk.Frame):
 
     def set_rows(self, rows, select: int | None = None):
         self.tree.delete(*self.tree.get_children())
+        rows = [["" if v is None else v for v in row] for row in rows]
+        ncol = len(self.columns)
+        only = [c for c in range(ncol)   # колонки, где одни эмодзи (значок игры, роль «♂️»…)
+                if any(str(r[c]).strip() for r in rows if c < len(r))
+                and all(not str(r[c]).strip() or not split_emoji(r[c])[1].strip() for r in rows if c < len(r))]
+        first = next((c for c in range(ncol) if c not in only), None)
+        icons, width = [], 0
         for i, row in enumerate(rows):
-            self.tree.insert("", "end", iid=str(i), values=["" if v is None else v for v in row])
+            emojis = [str(row[c]).strip() for c in only if c < len(row) and str(row[c]).strip()]
+            if first is not None and first < len(row):
+                lead, rest = split_emoji(row[first])
+                if lead and rest.strip():
+                    emojis.append(lead)
+                    row[first] = rest
+            colour = self.colour_of(i) if self.colour_of else None
+            img, w = row_icon(colour, emojis, px(ICON)) if (emojis or colour) else (None, 0)
+            icons.append(img)
+            width = max(width, w)
+        self._icons = icons  # держим ссылки, иначе Tk покажет пустоту
+        visible = [self.columns[c][0] for c in range(ncol) if c not in only]
+        if width:
+            self.tree.configure(show=("tree", "headings"), displaycolumns=visible)
+            self.tree.column("#0", width=width + px(36), minwidth=width + px(36), stretch=False)
+            self.tree.heading("#0", text=" · ".join(self.columns[c][1] for c in only if self.columns[c][1]))
+        else:
+            self.tree.configure(show="headings", displaycolumns="#all")
+        for i, row in enumerate(rows):
+            self.tree.insert("", "end", iid=str(i), values=row, image=icons[i] or "")
         if select is not None and 0 <= select < len(rows):
             self.tree.selection_set(str(select))
             self.tree.see(str(select))

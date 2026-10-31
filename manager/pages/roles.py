@@ -79,7 +79,6 @@ class RoleEditor(ListEditor):
 
     def __init__(self, parent, page, path, *, reader=None, writer=None, colour=None, **kw):
         self.reader, self.writer, self.colour = reader, writer, colour
-        self.swatches = {}
         super().__init__(parent, page, path, **kw)
 
     def items(self) -> list:
@@ -96,19 +95,10 @@ class RoleEditor(ListEditor):
             self.on_change(fresh)
 
     def refresh(self, select=None):
+        if self.colour:  # квадратик цвета рисует сама таблица — вместе с цветными эмодзи
+            items = self.items()
+            self.table.colour_of = lambda i: hex_colour(self.colour(items[i])) or None if i < len(items) else None
         super().refresh(select)
-        if not self.colour:
-            return
-        self.tree.configure(show=("tree", "headings"))
-        self.tree.column("#0", width=px(46), minwidth=px(46), stretch=False)
-        for i, item in enumerate(self.items()):
-            self.tree.item(str(i), image=self.swatch(self.colour(item)) or "")
-
-    def swatch(self, colour):
-        key = hex_colour(colour)
-        if key not in self.swatches:
-            self.swatches[key] = swatch_image(key, px(14))
-        return self.swatches[key]
 
 
 class View(Page):
