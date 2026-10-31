@@ -77,7 +77,8 @@ async def hide(member: discord.Member, role: discord.Role) -> str:
         saved = [r.id for r in member.roles if not r.is_default() and not r.managed and r != role]
         await db.execute("INSERT INTO ghost_backup (guild_id, user_id, roles, nick) VALUES (?,?,?,?)",
                          (guild.id, member.id, ",".join(map(str, saved)), member.nick or ""))
-    keep = [r for r in member.roles if r.managed]  # роли бустера и т.п. снять нельзя
+    # роли бустера и т.п. снять нельзя; 18+ бот выдаёт сам по полу и возрасту — не спорим с ним по кругу
+    keep = [r for r in member.roles if r.managed or r.name in (config.ROLE_GIRLS_18, config.ROLE_BOYS_18)]
     # маскировка: как у обычного участника после анкеты — 👻 и свой пол (♂️/♀️ из сохранённых ролей),
     # тогда в списке участников невидимка стоит среди людей своей группы, а не один
     (saved,) = await db.fetchone("SELECT roles FROM ghost_backup WHERE guild_id=? AND user_id=?", (guild.id, member.id))
