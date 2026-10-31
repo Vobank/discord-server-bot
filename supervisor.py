@@ -29,6 +29,7 @@ import io
 import json
 import os
 import platform
+import re
 import sqlite3
 import subprocess
 import sys
@@ -372,7 +373,8 @@ class Supervisor:
             for name, path in (("bot.log", os.path.join(APP, "bot.log")), ("supervisor.log", LOG)):
                 try:
                     with open(path, encoding="utf-8", errors="replace") as f:
-                        z.writestr(name, "".join(f.readlines()[-LOG_LINES:]))
+                        # без цветовых кодов терминала (в Docker журнал бота цветной)
+                        z.writestr(name, re.sub(r"\x1b\[[0-9;]*m", "", "".join(f.readlines()[-LOG_LINES:])))
                 except OSError:
                     pass
         await d.send_file("LOGS", {"to": to, "host": self.me["name"], "ts": time.time()}, "logs.zip", buf.getvalue())
