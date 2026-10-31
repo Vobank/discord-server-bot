@@ -49,6 +49,7 @@ COGS = {
     "cogs.ghosts": None,
     "cogs.updates": None,
     "cogs.streams": None,
+    "cogs.bot_panel": None,
 }
 
 log = logging.getLogger("bot")

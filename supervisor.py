@@ -25,6 +25,7 @@
 Статус для панели управления — runtime/status.json, команды от панели — runtime/command.txt."""
 import asyncio
 import hashlib
+import io
 import json
 import os
 import platform
@@ -33,6 +34,7 @@ import subprocess
 import sys
 import time
 import traceback
+import zipfile
 
 import sync
 
@@ -61,6 +63,8 @@ STATUS = os.path.join(sync.RUNTIME, "status.json")
 COMMAND = os.path.join(sync.RUNTIME, "command.txt")
 DB_TS = os.path.join(sync.RUNTIME, "db_ts.txt")
 LOG = os.path.join(sync.RUNTIME, "supervisor.log")
+REMOTE_LOGS = os.path.join(sync.RUNTIME, "remote")   # журналы с ПК/сервера, где работает бот (для панели)
+LOG_LINES = 1500
 
 
 def log(msg: str):
@@ -135,6 +139,7 @@ class Supervisor:
         self.procs: dict = {}
         self.became_active_at = 0.0
         self.last_balance = 0.0
+        self.logs_wanted_until = 0.0     # панель просит журнал с главного ПК — до этого времени ждём его
         if psutil:
             psutil.cpu_percent(interval=None)
 
@@ -351,11 +356,44 @@ class Supervisor:
             elif what == "bot_task" and c.get("task"):  # разовое задание боту, он заберёт его за 30 с
                 with open(os.path.join(sync.RUNTIME, "bot_task.txt"), "w", encoding="utf-8") as f:
                     f.write(str(c["task"]))
+            elif what == "send_logs" and c.get("to"):  # панель другого ПК хочет посмотреть журнал
+                await self.send_logs(d, c["to"])
             elif what == "move" and c.get("to") and c["to"] != self.me["id"]:
                 log(f"передаю бота ПК «{c.get('by')}» по его просьбе (закреплено за ним)")
                 await self.release(d, c["to"], pin=True)
                 return True
         return False
+
+    # ---------- журнал для панели другого ПК ----------
+    async def send_logs(self, d: sync.Discord, to: str):
+        """Хвосты журналов бота и диспетчера — одним архивом в канал синхронизации, адресно."""
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+            for name, path in (("bot.log", os.path.join(APP, "bot.log")), ("supervisor.log", LOG)):
+                try:
+                    with open(path, encoding="utf-8", errors="replace") as f:
+                        z.writestr(name, "".join(f.readlines()[-LOG_LINES:]))
+                except OSError:
+                    pass
+        await d.send_file("LOGS", {"to": to, "host": self.me["name"], "ts": time.time()}, "logs.zip", buf.getvalue())
+
+    async def pull_logs(self, d: sync.Discord):
+        """Забрать журнал, присланный этому ПК; старые чужие архивы — убрать."""
+        for m in await d.latest("LOGS", 30):
+            meta = m["meta"]
+            if meta.get("to") == self.me["id"]:
+                data = await d.download(m["url"])
+                os.makedirs(REMOTE_LOGS, exist_ok=True)
+                with zipfile.ZipFile(io.BytesIO(data)) as z:
+                    for name in z.namelist():
+                        if name in ("bot.log", "supervisor.log"):
+                            with open(os.path.join(REMOTE_LOGS, name), "wb") as f:
+                                f.write(z.read(name))
+                with open(os.path.join(REMOTE_LOGS, "info.json"), "w", encoding="utf-8") as f:
+                    json.dump({"host": meta.get("host"), "ts": meta.get("ts")}, f, ensure_ascii=False)
+                await d.delete(m["id"])
+            elif time.time() - meta.get("ts", 0) > 600:
+                await d.delete(m["id"])
 
     # ---------- выборы «кто главный» ----------
     def fresh(self, item: dict | None) -> bool:
@@ -411,6 +449,8 @@ class Supervisor:
 
     async def tick(self, d: sync.Discord):
         hb = self.hb = await d.read_heartbeat()
+        if self.state != "active" and time.time() < self.logs_wanted_until:
+            await self.pull_logs(d)
         active, claim = hb.get("active"), hb.get("claim")
         other_active = self.fresh(active) and active["id"] != self.me["id"]
 
@@ -543,6 +583,15 @@ class Supervisor:
                 await self.send_remote(d, "unpin")
         elif cmd == "check_update":
             self.last_code_check = 0
+        elif cmd == "fetch_logs" and d and not active:  # панель смотрит журнал главного ПК
+            self.logs_wanted_until = time.time() + 120
+            await self.send_remote(d, "send_logs", to=self.me["id"])
+        elif cmd.startswith("give:") and d:  # перенести бота на выбранный ПК (и закрепить там)
+            target = cmd[5:]
+            if active and target != self.me["id"]:
+                await self.release(d, target, pin=True)
+            elif not active:
+                await self.send_remote(d, "move", to=target)
         elif cmd == "stop":
             if active and d:
                 await self.release(d, "")

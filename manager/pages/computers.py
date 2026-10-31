@@ -290,8 +290,12 @@ class View(Page):
         pct.pack(side="left", padx=(px(6), 0))
         status = W.Pill(r, "", "neutral")
         status.grid(row=0, column=2, sticky="w", padx=(px(16), 0))
+        r.columnconfigure(3, minsize=px(150))   # «Перенести сюда»
+        give = W.button(r, "Перенести сюда", lambda h=h: self.give(h), tooltip="Перенести бота на этот компьютер "
+                        "и закрепить его там")
+        give.grid(row=0, column=3, sticky="e", padx=(px(12), 0))
         self.host_rows.append({"row": row, "pin": pin, "load": load, "meter": meter, "pct": pct, "status": status,
-                               "tips": [W.Tooltip(meter, ""), W.Tooltip(pct, "")], "online": None})
+                               "give": give, "tips": [W.Tooltip(meter, ""), W.Tooltip(pct, "")], "online": None})
 
     def _update_host(self, w: dict, h: dict, st: dict):
         now = time.time()
@@ -309,6 +313,10 @@ class View(Page):
             w["pin"].grid()
         else:
             w["pin"].grid_remove()
+        if online and not running and not st.get("solo"):
+            w["give"].grid()
+        else:
+            w["give"].grid_remove()
         load = h.get("load")
         if online and isinstance(load, (int, float)):
             w["meter"].set(load)
@@ -421,6 +429,18 @@ class View(Page):
             return
         state.send_command("take_here")
         self.app.notify("info", "Бот переезжает на этот компьютер", "Это займёт около 30 секунд.", timeout=10000)
+
+    def give(self, h: dict):
+        """Перенести бота на выбранный компьютер (сервер) и закрепить там."""
+        st = self.app.status or {}
+        name = h.get("name") or h.get("id")
+        where = f"на «{st['active_host']}»" if st.get("active_host") else "там, где он сейчас"
+        if not self.app.confirm(f"Перенести бота на «{name}»?",
+                                f"Бот остановится {where} и примерно через 30 секунд запустится на «{name}». "
+                                "Он останется там, пока вы не вернёте его по приоритету.", ok="Перенести"):
+            return
+        state.send_command(f"give:{h.get('id')}")
+        self.app.notify("info", f"Бот переезжает на «{name}»", "Это займёт около 30 секунд.", timeout=10000)
 
     def unpin(self):
         state.send_command("unpin")
