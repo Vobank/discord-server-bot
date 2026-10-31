@@ -625,7 +625,7 @@ async def sync_discord_onboarding(g: discord.Guild, must_see: list) -> list[str]
 
 async def arrange_roles(g: discord.Guild) -> list[str]:
     """Расставляет роли (всё, что ниже роли бота): администрация → mini Admin → именинник → пол → боты →
-    уровни → достижения → игры → киноман → 👻 → 🔒. Неизвестные роли — внизу, в прежнем порядке."""
+    уровни → достижения → игры → киноман → 👻 → 🔒 → 🤖 Боты. Неизвестные роли — внизу, в прежнем порядке."""
     me = g.me.top_role
     below = [r for r in sorted(g.roles, key=lambda r: -r.position) if r < me and not r.is_default()]
 
@@ -640,6 +640,7 @@ async def arrange_roles(g: discord.Guild) -> list[str]:
     order += named(config.ROLE_BIRTHDAY)
     order += named(*(n for n, _ in config.CUSTOM_ROLES))
     known = set(config.STAFF_ROLES | config.MOD_ROLES) | {config.ROLE_BASE, config.ROLE_PENDING, config.ROLE_CINEMA,
+            config.ROLE_BOTS,
             config.ROLE_GIRLS_18, config.ROLE_BOYS_18, config.ROLE_FAMILY_PROBATION, config.ROLE_BIRTHDAY,
             *config.LEVEL_ROLES.values(), *(a["role"] for a in config.ACHIEVEMENTS), *(r for r, *_ in config.GENDERS),
             *(n for gm in config.GAMES for n in config.dept_roles(gm)), *(n for n, *_ in config.FAMILY_ROLES),
@@ -653,7 +654,8 @@ async def arrange_roles(g: discord.Guild) -> list[str]:
     order += named(*(a["role"] for a in reversed(config.ACHIEVEMENTS)))
     order += named(*(n for gm in config.GAMES for n in config.dept_roles(gm)))
     order += named(config.ROLE_FAMILY_PROBATION)
-    order += named(config.ROLE_CINEMA, config.ROLE_GIRLS_18, config.ROLE_BOYS_18, config.ROLE_BASE, config.ROLE_PENDING)
+    order += named(config.ROLE_CINEMA, config.ROLE_GIRLS_18, config.ROLE_BOYS_18, config.ROLE_BASE, config.ROLE_PENDING,
+                   config.ROLE_BOTS)  # группа ботов — последняя выделенная, ниже всех людей
     order += [r for r in below if r not in order and r.name not in config.LIMITED_BOT_ROLES and r.name not in shop]
     # в самом низу: роли «ограниченных» ботов (Akemi), под ними — только роли их магазина
     order += named(*config.LIMITED_BOT_ROLES)

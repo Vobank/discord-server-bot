@@ -7,6 +7,8 @@
     (администраторов и владельца AutoMod не трогает — они упоминать могут);
   • не считает ему уровни, достижения, статистику и не показывает в топах, итогах недели,
     поздравлениях и счётчике участников (проверки config.is_ghost в других модулях), старые записи стирает.
+Боты получают выделенную роль «🤖 Боты» — своя группа в списке участников, внизу, а невидимки
+стоят среди людей в группе 👻.
 Убрали ID из списка — на следующей проверке бот вернёт роли и ник как было.
 Менять роли и ник бот может, только если его роль стоит выше ролей невидимки — иначе ждёт и пишет в журнал."""
 import logging
@@ -76,11 +78,27 @@ async def hide(member: discord.Member, role: discord.Role) -> str:
         await db.execute("INSERT INTO ghost_backup (guild_id, user_id, roles, nick) VALUES (?,?,?,?)",
                          (guild.id, member.id, ",".join(map(str, saved)), member.nick or ""))
     keep = [r for r in member.roles if r.managed]  # роли бустера и т.п. снять нельзя
-    want = [role, *keep]  # без выделенных ролей — в списке участников в общей группе «В сети»
+    # маскировка: в списке участников стоит среди обычных людей в группе 👻 (там большинство участников)
+    camo = discord.utils.get(guild.roles, name=config.ROLE_BASE)
+    want = [role, *keep, *([camo] if camo and camo < guild.me.top_role else [])]
     if set(member.roles) - {guild.default_role} != set(want) or member.nick != fake_nick(member.id):
         await member.edit(roles=want, nick=fake_nick(member.id), reason="Невидимка")
     await forget_activity(guild, member.id)
     return ""
+
+
+async def bots_group(guild: discord.Guild):
+    """Все боты — в своей выделенной группе «🤖 Боты» (в самом низу списка, над «В сети»)."""
+    role = discord.utils.get(guild.roles, name=config.ROLE_BOTS)
+    if role is None:
+        role = await guild.create_role(name=config.ROLE_BOTS, hoist=True, mentionable=False,
+                                       colour=discord.Colour(0x99AAB5), reason="Группа ботов в списке участников")
+        await role.edit(position=1, reason="Группа ботов — ниже всех")
+    if role >= guild.me.top_role:
+        return
+    for member in guild.members:
+        if member.bot and role not in member.roles:
+            await member.add_roles(role, reason="Группа ботов")
 
 
 async def restore(guild: discord.Guild, user_id: int, role: discord.Role | None) -> str:
@@ -122,6 +140,7 @@ class Ghosts(commands.Cog):
 
     async def sync(self, guild: discord.Guild):
         await sync_automod(guild)
+        await bots_group(guild)
         backups = {uid for (uid,) in await db.fetchall("SELECT user_id FROM ghost_backup WHERE guild_id=?", (guild.id,))}
         members = [m for uid in config.GHOSTS if (m := guild.get_member(uid))]
         role = await ghost_role(guild) if members else discord.utils.get(guild.roles, name=GHOST_ROLE)
@@ -135,10 +154,10 @@ class Ghosts(commands.Cog):
                 self.waiting.add(text)
                 log.warning("Невидимки: %s", text)
 
-    # если невидимка перезашёл на сервер — сразу прячем снова
+    # если невидимка перезашёл на сервер — сразу прячем снова; новый бот — сразу в группу ботов
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
-        if config.is_ghost(member):
+        if config.is_ghost(member) or member.bot:
             await self.sync(member.guild)
 
 
