@@ -76,10 +76,7 @@ async def hide(member: discord.Member, role: discord.Role) -> str:
         await db.execute("INSERT INTO ghost_backup (guild_id, user_id, roles, nick) VALUES (?,?,?,?)",
                          (guild.id, member.id, ",".join(map(str, saved)), member.nick or ""))
     keep = [r for r in member.roles if r.managed]  # роли бустера и т.п. снять нельзя
-    # маскировка: без выделенной роли человек стоит в списке участников среди ботов — кладём его
-    # в общую группу 👻 (там большинство участников)
-    camo = discord.utils.get(guild.roles, name=config.ROLE_BASE)
-    want = [role, *keep, *([camo] if camo and camo < guild.me.top_role else [])]
+    want = [role, *keep]  # без выделенных ролей — в списке участников в общей группе «В сети»
     if set(member.roles) - {guild.default_role} != set(want) or member.nick != fake_nick(member.id):
         await member.edit(roles=want, nick=fake_nick(member.id), reason="Невидимка")
     await forget_activity(guild, member.id)
