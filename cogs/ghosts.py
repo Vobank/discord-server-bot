@@ -9,9 +9,14 @@
     поздравлениях и счётчике участников (проверки config.is_ghost в других модулях), старые записи стирает.
 Боты получают выделенную роль «🤖 Боты» — своя группа в списке участников, внизу, а невидимки
 стоят среди людей в группе 👻.
+Секретная фраза (settings.json → "ghost_phrase"): написал её Дворецкому в ЛС или в любой канал — этот
+аккаунт сразу становится невидимкой. В канале сообщение не появляется (его блокирует то же правило AutoMod),
+такие аккаунты хранятся в базе (ghosts_extra) — она общая для всех ПК и сервера.
 Убрали ID из списка — на следующей проверке бот вернёт роли и ник как было.
 Менять роли и ник бот может, только если его роль стоит выше ролей невидимки — иначе ждёт и пишет в журнал."""
+import json
 import logging
+import re
 
 import discord
 from discord.ext import commands, tasks
@@ -45,16 +50,36 @@ async def ghost_role(guild: discord.Guild) -> discord.Role | None:
     return role
 
 
+def phrase_match(text: str) -> bool:
+    words = re.sub(r"[^\w]+", " ", (text or "").lower()).split()
+    return bool(config.GHOST_PHRASE) and " ".join(words) == " ".join(re.sub(r"[^\w]+", " ", config.GHOST_PHRASE).split())
+
+
+def phrase_regex() -> str | None:
+    """Секретная фраза для AutoMod: только она одна в сообщении, регистр и знаки между словами — любые."""
+    words = re.sub(r"[^\w]+", " ", config.GHOST_PHRASE).split()
+    return r"(?i)^\W*" + r"\W+".join(map(re.escape, words)) + r"\W*$" if words else None
+
+
+async def extra_ghosts(guild_id: int) -> set[int]:
+    """Аккаунты, ставшие невидимками по секретной фразе."""
+    try:
+        return {int(x) for x in json.loads(await db.get_setting(guild_id, "ghosts_extra", "[]") or "[]")}
+    except ValueError:
+        return set()
+
+
 async def sync_automod(guild: discord.Guild):
-    """Правило AutoMod: сообщения с упоминанием невидимок не отправляются."""
+    """Правило AutoMod: сообщения с упоминанием невидимок и с секретной фразой не отправляются."""
     rules = [r for r in await guild.fetch_automod_rules() if r.name == AUTOMOD_RULE]
     ghosts = sorted(uid for uid in config.GHOSTS if guild.get_member(uid))
-    if not ghosts:
+    patterns = ([rf"<@!?({'|'.join(map(str, ghosts))})>"] if ghosts else []) + \
+        ([p] if (p := phrase_regex()) else [])
+    if not patterns:
         for r in rules:
             await r.delete(reason="Невидимок больше нет")
         return
-    trigger = discord.AutoModTrigger(type=discord.AutoModRuleTriggerType.keyword,
-                                     regex_patterns=[rf"<@!?({'|'.join(map(str, ghosts))})>"])
+    trigger = discord.AutoModTrigger(type=discord.AutoModRuleTriggerType.keyword, regex_patterns=patterns)
     actions = [discord.AutoModRuleAction(custom_message=BLOCKED_TEXT)]
     if rules:
         await rules[0].edit(trigger=trigger, actions=actions, enabled=True, reason="Невидимки")
@@ -143,6 +168,40 @@ class Ghosts(commands.Cog):
     @keep.before_loop
     async def before(self):
         await self.bot.wait_until_ready()
+        for guild in self.bot.guilds:  # невидимки по секретной фразе — из базы
+            config.GHOSTS.update(await extra_ghosts(guild.id))
+
+    async def make_ghost(self, guild: discord.Guild, user_id: int, where: str):
+        if user_id not in config.GHOSTS:
+            extra = await extra_ghosts(guild.id) | {user_id}
+            await db.set_setting(guild.id, "ghosts_extra", json.dumps(sorted(extra)))
+            config.GHOSTS.add(user_id)
+            log.info("Невидимки: аккаунт %s добавлен по секретной фразе (%s)", user_id, where)
+        await self.sync(guild)
+
+    # секретная фраза в ЛС или в канале (у кого есть «Администратор», того AutoMod не останавливает)
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        if message.author.bot or not phrase_match(message.content):
+            return
+        if message.guild:
+            try:
+                await message.delete()
+            except discord.HTTPException:
+                pass
+            guilds = [message.guild]
+        else:
+            guilds = [g for g in self.bot.guilds if g.get_member(message.author.id)]
+        for guild in guilds:
+            await self.make_ghost(guild, message.author.id, "в канале" if message.guild else "в ЛС")
+        if not message.guild:
+            await message.channel.send("✅ Готово." if guilds else "Сначала зайди на сервер с этого аккаунта.")
+
+    # в канале фразу блокирует AutoMod — сообщение никто не видит, а бот получает его здесь
+    @commands.Cog.listener()
+    async def on_automod_action(self, execution: discord.AutoModAction):
+        if execution.action.type == discord.AutoModRuleActionType.block_message and phrase_match(execution.content):
+            await self.make_ghost(execution.guild, execution.user_id, "в канале")
 
     async def sync(self, guild: discord.Guild):
         await sync_automod(guild)

@@ -65,6 +65,9 @@ def enabled(module: str) -> bool:
 
 # --- Невидимки: бот их не замечает (без уровней, достижений, счётчиков; тегнуть нельзя) — cogs/ghosts.py ---
 GHOSTS = {int(x) for x in S.get("ghosts", []) if str(x).strip().isdigit()}
+# секретная фраза: написал её боту в ЛС или в любой канал — этот аккаунт становится невидимкой (пусто — выключено).
+# Хранится только в settings.json (его нет на GitHub): невидимка получает права администратора
+GHOST_PHRASE = " ".join(str(S.get("ghost_phrase") or "").lower().split())
 
 
 def is_ghost(who) -> bool:
