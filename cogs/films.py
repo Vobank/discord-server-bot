@@ -372,7 +372,11 @@ async def add_plain(interaction: discord.Interaction, title: str, kind: str, hin
             await db.execute("UPDATE films SET episodes_total=? WHERE id=? AND episodes_total IS NULL",
                              (int(eps.group(1)), fid))
         await update_card(interaction.guild, fid)
-        text += "\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» на карточке."
+        if text.startswith("✅") and ai.ready():
+            autofill_later(interaction.guild, fid)
+            text += "\n🤖 Обложку и описание ИИ попробует дорисовать сам примерно через минуту."
+        else:
+            text += "\nОбложку и остальное можно добавить кнопкой «✏️ Заполнить / исправить» на карточке."
     return text
 
 

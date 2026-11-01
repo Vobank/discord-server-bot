@@ -519,6 +519,14 @@ class Cinema(commands.Cog):
             from cogs.onboarding import reonboard_all
             for guild in self.bot.guilds:
                 await reonboard_all(guild)
+        elif task.startswith("add_film:"):  # добавить фильм в подборку (с ИИ-дозаполнением)
+            from cogs import films
+            title = task.split(":", 1)[1].strip()
+            for guild in self.bot.guilds:
+                _, fid = await films.suggest(guild, guild.me, title)
+                if fid:
+                    await films.update_card(guild, fid)
+                    films.autofill_later(guild, fid)
 
     @tasks.loop(seconds=30)
     async def ticker(self):
