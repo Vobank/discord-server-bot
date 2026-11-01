@@ -527,6 +527,15 @@ class Cinema(commands.Cog):
                 if fid:
                     await films.update_card(guild, fid)
                     films.autofill_later(guild, fid)
+        elif task == "refresh_cards":  # перерисовать все карточки фильмов (после смены вида)
+            from cogs import films
+            for guild in self.bot.guilds:
+                rows = await db.fetchall("SELECT id FROM films WHERE guild_id=? AND card_msg IS NOT NULL AND status<>'planned'", (guild.id,))
+                for (fid,) in rows:
+                    try:
+                        await films.update_card(guild, fid)
+                    except discord.HTTPException:
+                        pass
 
     @tasks.loop(seconds=30)
     async def ticker(self):

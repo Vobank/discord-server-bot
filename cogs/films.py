@@ -133,22 +133,23 @@ async def card_style(guild_id: int) -> str:
     return style if style in film_card.STYLES else "wide"
 
 
-def card_embed(f: dict, style: str = "wide") -> discord.Embed:
-    """wide — описание и все поля текстом; compact — только описание; tall — всё на картинке, текстом лишь статус."""
+def card_embeds(f: dict, style: str = "wide") -> list[discord.Embed]:
+    """Порядок как на карточке: 1 — картинка сверху (отдельным эмбедом, иначе Discord ставит её вниз),
+    2 — название, 3 — поля (тип, год, страна, время / серии), 4 — описание, затем статус."""
     watched = f["status"] == "watched"
-    desc = (f["description"] or "*Описания пока нет — нажми «✏️ Заполнить / исправить».*")[:4000]
-    e = discord.Embed(title=f"🎬 {f['title']}", colour=discord.Colour.green() if watched else COLOUR,
-                      description=None if style == "tall" else desc)
-    if style == "wide":
-        add_fields(e, f)
-    elif is_serial(f):
-        e.add_field(name="📺 Серии", value=progress(f), inline=False)
-    e.set_image(url="attachment://film.png")
+    colour = discord.Colour.green() if watched else COLOUR
+    image = discord.Embed(colour=colour).set_image(url="attachment://film.png")
+    text = discord.Embed(title=f"🎬 {f['title']}", colour=colour)
+    add_fields(text, f)
+    desc = (f["description"] or "").strip()
+    if desc or style != "tall":
+        text.add_field(name="📝 Описание",
+                       value=(desc or "*Пока нет — нажми «✏️ Заполнить / исправить».*")[:1024], inline=False)
     who = f"<@{f['author_id']}>" if f.get("author_id") else "—"
     status = "✅ Уже посмотрели" if watched else f"👍 Хотят посмотреть: {f['count']}"
-    e.add_field(name="Статус", value=f"{status} · предложил {who}" + (" · 🔁 смотрели раньше" if f["watched_before"] else ""),
-                inline=False)
-    return e
+    text.add_field(name="Статус", value=f"{status} · предложил {who}"
+                   + (" · 🔁 смотрели раньше" if f["watched_before"] else ""), inline=False)
+    return [image, text]
 
 
 def add_fields(e: discord.Embed, f: dict):
@@ -201,10 +202,10 @@ async def update_card(guild: discord.Guild, film_id: int, new: bool = False):
     if f["card_msg"] and not new:
         try:
             msg = await channel.fetch_message(f["card_msg"])
-            return await msg.edit(embed=card_embed(f, style), attachments=[await card_file(f, style)], view=view)
+            return await msg.edit(embeds=card_embeds(f, style), attachments=[await card_file(f, style)], view=view)
         except discord.HTTPException:
             pass
-    msg = await channel.send(embed=card_embed(f, style), file=await card_file(f, style), view=view)
+    msg = await channel.send(embeds=card_embeds(f, style), file=await card_file(f, style), view=view)
     await db.execute("UPDATE films SET card_msg=? WHERE id=?", (msg.id, film_id))
     await post_panel(None, channel)  # панель с кнопками — снова внизу
 
@@ -1151,7 +1152,7 @@ class Films(commands.Cog):
         now = await card_style(g.id)
         for i, style in enumerate(film_card.STYLES, 1):
             mark = " — сейчас выбран" if style == now else ""
-            await interaction.followup.send(f"**Вариант {i}. {STYLE_NAMES[style]}**{mark}", embed=card_embed(f, style),
+            await interaction.followup.send(f"**Вариант {i}. {STYLE_NAMES[style]}**{mark}", embeds=card_embeds(f, style),
                                             file=await card_file(f, style), view=ChooseStyleView(style), ephemeral=True)
 
     @card_style_cmd.autocomplete("film")
