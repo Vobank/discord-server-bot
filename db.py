@@ -78,6 +78,12 @@ CREATE TABLE IF NOT EXISTS ghost_backup (
     guild_id INTEGER, user_id INTEGER, roles TEXT, nick TEXT,
     PRIMARY KEY (guild_id, user_id)
 );
+CREATE TABLE IF NOT EXISTS film_flow (
+    message_id INTEGER PRIMARY KEY, guild_id INTEGER, user_id INTEGER, stage TEXT, data TEXT, ts INTEGER
+);
+CREATE TABLE IF NOT EXISTS film_flow_cover (
+    message_id INTEGER, n INTEGER, data BLOB, PRIMARY KEY (message_id, n)
+);
 CREATE TABLE IF NOT EXISTS badges (
     guild_id INTEGER, key TEXT, data BLOB,
     PRIMARY KEY (guild_id, key)

@@ -12,6 +12,7 @@
 import asyncio
 import datetime
 import io
+import json
 import logging
 import random
 import re
@@ -401,6 +402,44 @@ def candidate_line(c: dict) -> str:
     return " · ".join(x for x in (kind, c["country"], length, c["note"]) if x)
 
 
+# меню выбора фильма хранятся в базе (film_flow) — переживают перезапуск бота, а не только живут в памяти
+FLOW_TTL = 3 * 3600
+
+
+async def save_flow(message_id: int, guild_id: int, user_id: int, stage: str, data: dict):
+    await db.execute("INSERT OR REPLACE INTO film_flow (message_id, guild_id, user_id, stage, data, ts) "
+                     "VALUES (?,?,?,?,?,?)", (message_id, guild_id, user_id, stage, json.dumps(data), int(time.time())))
+    await db.execute("DELETE FROM film_flow WHERE ts < ?", (int(time.time()) - FLOW_TTL,))
+    await db.execute("DELETE FROM film_flow_cover WHERE message_id NOT IN (SELECT message_id FROM film_flow)")
+
+
+async def clear_flow(message_id: int):
+    await db.execute("DELETE FROM film_flow WHERE message_id=?", (message_id,))
+    await db.execute("DELETE FROM film_flow_cover WHERE message_id=?", (message_id,))
+
+
+async def expired(interaction: discord.Interaction):
+    try:
+        await interaction.response.edit_message(embed=discord.Embed(
+            description="⏳ Это меню устарело. Нажми **➕ Предложить фильм** и попробуй снова.", colour=COLOUR),
+            view=None, attachments=[])
+    except discord.HTTPException:
+        pass
+
+
+async def load_flow(interaction: discord.Interaction, stage: str) -> dict | None:
+    """Состояние меню из базы. None — если меню устарело или нажал не тот человек (тогда уже ответили)."""
+    row = await db.fetchone("SELECT user_id, data, ts FROM film_flow WHERE message_id=? AND stage=?",
+                            (interaction.message.id, stage))
+    if not row or time.time() - row[2] > FLOW_TTL:
+        await expired(interaction)
+        return None
+    if row[0] != interaction.user.id:
+        await interaction.response.send_message("Это меню открыл другой человек 🙂", ephemeral=True, delete_after=GONE)
+        return None
+    return json.loads(row[1])
+
+
 async def ai_search(interaction: discord.Interaction, query: str, kind: str, hints: dict):
     query = re.sub(r"\s+", " ", query).strip()[:100]
     if len(normalize(query)) < 2:
@@ -415,41 +454,51 @@ async def ai_search(interaction: discord.Interaction, query: str, kind: str, hin
                                          ", ".join(f"{k}: {v}" for k, v in hints.items() if v))
     except ai.AIError as e:
         problem = str(e)
-    view = PickFilmView(query, kind, hints, items)
-    await interaction.edit_original_response(embed=view.embed(problem), view=view)
+    await interaction.edit_original_response(embed=pick_embed(query, items, problem), view=pick_view(items))
+    msg = await interaction.original_response()
+    await save_flow(msg.id, interaction.guild.id, interaction.user.id, "pick",
+                    {"query": query, "kind": kind, "hints": hints, "items": items})
+
+
+def pick_embed(query: str, items: list[dict], problem: str = "") -> discord.Embed:
+    if not items:
+        text = f"😕 Не нашёл ничего похожего на «**{query}**»" + (f" ({problem})" if problem else "") + \
+               ".\nМожно добавить как написал — кнопкой ниже."
+        return discord.Embed(title="🤖 Поиск фильма", description=text, colour=COLOUR)
+    lines = [f"**{i}. {c['title']}**" + (f" ({c['year']})" if c["year"] else "")
+             + (f" — *{c['original']}*" if c["original"] and c["original"] != c["title"] else "")
+             + f"\n　{candidate_line(c)}" for i, c in enumerate(items, 1)]
+    return discord.Embed(title=f"🤖 Что нашёл по «{query}»",
+                         description="\n".join(lines) + "\n\n👇 **Выбери точный вариант** — ИИ может ошибаться, "
+                                                        "поэтому решаешь ты.", colour=COLOUR)
+
+
+def pick_view(items: list[dict]) -> "PickFilmView":
+    view = PickFilmView()
+    if items:
+        view.pick.options = [
+            discord.SelectOption(label=(f"{c['title']} ({c['year']})" if c["year"] else c["title"])[:100],
+                                 value=str(i), description=candidate_line(c)[:100] or None,
+                                 emoji=TYPES.get(KIND_KEYS.get(c["kind"].lower(), ""), ("🎬",))[0])
+            for i, c in enumerate(items)]
+    else:
+        view.remove_item(view.pick)
+    return view
 
 
 class PickFilmView(discord.ui.View):
-    """Варианты от ИИ: выбрать точный или добавить как написал."""
+    """Варианты от ИИ: выбрать точный или добавить как написал (меню хранится в базе — работает после перезапуска)."""
 
-    def __init__(self, query: str, kind: str, hints: dict, items: list[dict]):
-        super().__init__(timeout=MENU_GONE)
-        self.query, self.kind, self.hints, self.items = query, kind, hints, items
-        if items:
-            self.pick.options = [
-                discord.SelectOption(label=(f"{c['title']} ({c['year']})" if c["year"] else c["title"])[:100],
-                                     value=str(i), description=candidate_line(c)[:100] or None,
-                                     emoji=TYPES.get(KIND_KEYS.get(c["kind"].lower(), ""), ("🎬",))[0])
-                for i, c in enumerate(items)]
-        else:
-            self.remove_item(self.pick)
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    def embed(self, problem: str = "") -> discord.Embed:
-        if not self.items:
-            text = f"😕 Не нашёл ничего похожего на «**{self.query}**»" + (f" ({problem})" if problem else "") + \
-                   ".\nМожно добавить как написал — кнопкой ниже."
-            return discord.Embed(title="🤖 Поиск фильма", description=text, colour=COLOUR)
-        lines = [f"**{i}. {c['title']}**" + (f" ({c['year']})" if c["year"] else "")
-                 + (f" — *{c['original']}*" if c["original"] and c["original"] != c["title"] else "")
-                 + f"\n　{candidate_line(c)}" for i, c in enumerate(self.items, 1)]
-        return discord.Embed(title=f"🤖 Что нашёл по «{self.query}»",
-                             description="\n".join(lines) + "\n\n👇 **Выбери точный вариант** — ИИ может ошибаться, "
-                                                            "поэтому решаешь ты.", colour=COLOUR)
-
-    @discord.ui.select(placeholder="🎯 Какой именно?", options=[discord.SelectOption(label="-")])
+    @discord.ui.select(placeholder="🎯 Какой именно?", custom_id="film:pick", options=[discord.SelectOption(label="-")])
     async def pick(self, interaction: discord.Interaction, select):
-        c = self.items[int(select.values[0])]
-        kind = KIND_KEYS.get(c["kind"].lower(), self.kind)
+        flow = await load_flow(interaction, "pick")
+        if flow is None:
+            return
+        c = flow["items"][int(select.values[0])]
+        kind = KIND_KEYS.get(c["kind"].lower(), flow["kind"])
         await interaction.response.edit_message(
             embed=waiting(f"🤖 Уточняю «**{c['title']}**» по Википедии: описание, сезоны и серии — 10–30 секунд."),
             view=None)
@@ -461,47 +510,58 @@ class PickFilmView(discord.ui.View):
             info = {}
         c = c | {"seasons": info.get("seasons") or c["seasons"], "episodes": info.get("episodes") or c["episodes"]}
         if kind in SERIALS and (c["seasons"] or 0) >= 2:
-            view = SeasonsView(c, kind, info)
-            return await interaction.edit_original_response(embed=view.embed(), view=view)
+            msg = await interaction.original_response()
+            await save_flow(msg.id, interaction.guild.id, interaction.user.id, "seasons",
+                            {"c": c, "kind": kind, "info": info})
+            return await interaction.edit_original_response(embed=seasons_embed(c), view=SeasonsView())
         await add_chosen(interaction, c, kind, info, split=False)
 
-    @discord.ui.button(label="Нет нужного — добавить как написал", emoji="✏️", row=1)
+    @discord.ui.button(label="Нет нужного — добавить как написал", emoji="✏️", custom_id="film:plain", row=1)
     async def plain(self, interaction: discord.Interaction, _):
+        flow = await load_flow(interaction, "pick")
+        if flow is None:
+            return
         await interaction.response.edit_message(embed=waiting("Добавляю…"), view=None)
-        text = await add_plain(interaction, self.query, self.kind, self.hints)
+        text = await add_plain(interaction, flow["query"], flow["kind"], flow["hints"])
+        await clear_flow(interaction.message.id)
         await interaction.edit_original_response(embed=discord.Embed(description=text, colour=COLOUR))
         vanish(interaction, 30)
 
-    @discord.ui.button(label="Отмена", emoji="✖️", row=1)
+    @discord.ui.button(label="Отмена", emoji="✖️", custom_id="film:cancel", row=1)
     async def cancel(self, interaction: discord.Interaction, _):
+        await clear_flow(interaction.message.id)
         await interaction.response.defer()
         await interaction.delete_original_response()
 
 
+def seasons_embed(c: dict) -> discord.Embed:
+    n = c["seasons"]
+    return discord.Embed(
+        title=f"📺 {c['title']} — {n} {plural(n, 'сезон', 'сезона', 'сезонов')}",
+        description="Как добавить в подборку?\n\n"
+                    f"📺 **Одной карточкой** — весь сериал ({serial_length(n, c['episodes'])})\n"
+                    f"🗂️ **По сезонам** — {n} {plural(n, 'карточка', 'карточки', 'карточек')}: "
+                    f"«{c['title']} — 1 сезон», «… — 2 сезон» и так далее, у каждой свои серии",
+        colour=COLOUR)
+
+
 class SeasonsView(discord.ui.View):
-    """У сериала несколько сезонов: одна карточка на весь сериал или по карточке на каждый сезон."""
+    """Сериал: одной карточкой или по карточке на сезон (меню хранится в базе)."""
 
-    def __init__(self, c: dict, kind: str, info: dict):
-        super().__init__(timeout=MENU_GONE)
-        self.c, self.kind, self.info = c, kind, info
+    def __init__(self):
+        super().__init__(timeout=None)
 
-    def embed(self) -> discord.Embed:
-        n = self.c["seasons"]
-        return discord.Embed(
-            title=f"📺 {self.c['title']} — {n} {plural(n, 'сезон', 'сезона', 'сезонов')}",
-            description="Как добавить в подборку?\n\n"
-                        f"📺 **Одной карточкой** — весь сериал ({serial_length(n, self.c['episodes'])})\n"
-                        f"🗂️ **По сезонам** — {n} {plural(n, 'карточка', 'карточки', 'карточек')}: "
-                        f"«{self.c['title']} — 1 сезон», «… — 2 сезон» и так далее, у каждой свои серии",
-            colour=COLOUR)
-
-    @discord.ui.button(label="Одной карточкой", emoji="📺", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="Одной карточкой", emoji="📺", style=discord.ButtonStyle.primary, custom_id="film:season:whole")
     async def whole(self, interaction: discord.Interaction, _):
-        await add_chosen(interaction, self.c, self.kind, self.info, split=False)
+        flow = await load_flow(interaction, "seasons")
+        if flow is not None:
+            await add_chosen(interaction, flow["c"], flow["kind"], flow["info"], split=False)
 
-    @discord.ui.button(label="По сезонам", emoji="🗂️", style=discord.ButtonStyle.primary)
+    @discord.ui.button(label="По сезонам", emoji="🗂️", style=discord.ButtonStyle.primary, custom_id="film:season:split")
     async def split(self, interaction: discord.Interaction, _):
-        await add_chosen(interaction, self.c, self.kind, self.info, split=True)
+        flow = await load_flow(interaction, "seasons")
+        if flow is not None:
+            await add_chosen(interaction, flow["c"], flow["kind"], flow["info"], split=True)
 
 
 async def add_chosen(interaction: discord.Interaction, c: dict, kind: str, info: dict, split: bool):
@@ -546,39 +606,59 @@ async def add_chosen(interaction: discord.Interaction, c: dict, kind: str, info:
     for fid in fids:
         await update_card(g, fid)
     summary = "\n".join(texts[:8]) + (f"\n… и ещё {len(texts) - 8}" if len(texts) > 8 else "")
+    msg = await interaction.original_response()
     if len(covers) < 2:
+        await clear_flow(msg.id)
         await interaction.edit_original_response(embed=discord.Embed(description=summary, colour=COLOUR))
         return vanish(interaction, 30)
+    await save_flow(msg.id, g.id, user.id, "cover", {"fids": new})
+    await db.execute("DELETE FROM film_flow_cover WHERE message_id=?", (msg.id,))
+    for i, d in enumerate(covers, 1):
+        await db.execute("INSERT INTO film_flow_cover (message_id, n, data) VALUES (?,?,?)", (msg.id, i, d))
     embeds = [discord.Embed(description=summary + "\n\n🖼️ **Выбери обложку** — сейчас стоит №1.\n\n**№1**",
                             colour=COLOUR).set_image(url="attachment://cover1.jpg")]
     embeds += [discord.Embed(description=f"**№{n}**", colour=COLOUR).set_image(url=f"attachment://cover{n}.jpg")
                for n in range(2, len(covers) + 1)]
-    await interaction.edit_original_response(embeds=embeds, view=CoverView(new, covers), attachments=[
+    await interaction.edit_original_response(embeds=embeds, view=cover_view(len(covers)), attachments=[
         discord.File(io.BytesIO(d), filename=f"cover{n}.jpg") for n, d in enumerate(covers, 1)])
 
 
-class CoverView(discord.ui.View):
-    """Несколько обложек: нажал номер — она встаёт на карточку (у сериала по сезонам — на все карточки)."""
+def cover_view(count: int) -> "CoverView":
+    view = CoverView()
+    for item in list(view.children):
+        if int(item.custom_id.split(":")[-1]) > count:
+            view.remove_item(item)
+    return view
 
-    def __init__(self, fids: list[int], covers: list[bytes]):
-        super().__init__(timeout=MENU_GONE)
-        self.fids, self.covers = fids, covers
-        for n in range(1, len(covers) + 1):
-            button = discord.ui.Button(label=f"Обложка {n}", emoji="🖼️",
+
+class CoverView(discord.ui.View):
+    """Несколько обложек на выбор (до 4). Какую нажал — та встаёт на карточку. Меню хранится в базе."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+        for n in range(1, 5):
+            button = discord.ui.Button(label=f"Обложка {n}", emoji="🖼️", custom_id=f"film:cover:{n}",
                                        style=discord.ButtonStyle.success if n == 1 else discord.ButtonStyle.primary)
-            button.callback = self.choose(n)
+            button.callback = self.choose
             self.add_item(button)
 
-    def choose(self, n: int):
-        async def callback(interaction: discord.Interaction):
-            await interaction.response.edit_message(embeds=[waiting("Ставлю обложку…")], attachments=[], view=None)
-            for fid in self.fids:
-                await db.execute("UPDATE films SET poster=? WHERE id=?", (self.covers[n - 1], fid))
-                await update_card(interaction.guild, fid)
-            await interaction.edit_original_response(embeds=[discord.Embed(
-                description=f"✅ Обложка №{n} поставлена — карточка в подборке обновлена", colour=COLOUR)])
-            vanish(interaction, 20)
-        return callback
+    async def choose(self, interaction: discord.Interaction):
+        n = int(interaction.data["custom_id"].split(":")[-1])
+        flow = await load_flow(interaction, "cover")
+        if flow is None:
+            return
+        row = await db.fetchone("SELECT data FROM film_flow_cover WHERE message_id=? AND n=?",
+                                (interaction.message.id, n))
+        if not row:
+            return await expired(interaction)
+        await interaction.response.edit_message(embeds=[waiting("Ставлю обложку…")], attachments=[], view=None)
+        for fid in flow["fids"]:
+            await db.execute("UPDATE films SET poster=? WHERE id=?", (row[0], fid))
+            await update_card(interaction.guild, fid)
+        await clear_flow(interaction.message.id)
+        await interaction.edit_original_response(embeds=[discord.Embed(
+            description=f"✅ Обложка №{n} поставлена — карточка в подборке обновлена", colour=COLOUR)])
+        vanish(interaction, 20)
 
 
 # ---------- заполнить / исправить карточку ----------
@@ -1048,6 +1128,9 @@ class Films(commands.Cog):
         self.bot = bot
         bot.add_view(WishlistView())
         bot.add_view(FilmCardView())
+        bot.add_view(PickFilmView())
+        bot.add_view(SeasonsView())
+        bot.add_view(CoverView())
 
     @app_commands.command(name="card-style", description="(Админ) Сравнить виды карточек фильмов и выбрать один")
     @app_commands.describe(film="Фильм из подборки, на котором показать (пусто — любой)")
