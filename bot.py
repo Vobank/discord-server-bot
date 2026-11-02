@@ -44,6 +44,7 @@ COGS = {
     "cogs.family": "family",
     "cogs.protection": "protection",
     "cogs.community": "community",
+    "cogs.garage": "family",
     "cogs.photo_only": "photo_only",
     "cogs.cleanup": "hide_thread_notices",
     "cogs.ghosts": None,

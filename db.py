@@ -84,6 +84,11 @@ CREATE TABLE IF NOT EXISTS film_flow (
 CREATE TABLE IF NOT EXISTS film_flow_cover (
     message_id INTEGER, n INTEGER, data BLOB, PRIMARY KEY (message_id, n)
 );
+CREATE TABLE IF NOT EXISTS fleet (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER, kind TEXT, name TEXT, note TEXT,
+    taken_by INTEGER, taken_at INTEGER, done INTEGER DEFAULT 0, created_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS badges (
     guild_id INTEGER, key TEXT, data BLOB,
     PRIMARY KEY (guild_id, key)
