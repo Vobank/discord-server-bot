@@ -1,6 +1,7 @@
 """Заявки в семью: #📝・заявка-в-семью (кнопка) → анкета в 3 шага → #💭・request-in-famq
 (пинг руководства и HR, тред для обсуждения, ✅/❌ голосование) → Принять (испытательный срок) / Отклонить."""
 import json
+import os
 import time
 
 import discord
@@ -212,10 +213,18 @@ class FamilyReviewView(discord.ui.View):
         await interaction.response.send_modal(RejectModal(interaction.message))
 
 
+BANNER = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "assets", "cards", "family_banner.jpg")
+
+
 async def post_family_panel(bot: commands.Bot, channel: discord.TextChannel):
     async for msg in channel.history(limit=30):
         if msg.author == bot.user:
             await msg.delete()
+    banner = discord.Embed(colour=COLOUR)  # баннер семьи — отдельным эмбедом сверху
+    file = None
+    if os.path.exists(BANNER):
+        file = discord.File(BANNER, filename="family_banner.jpg")
+        banner.set_image(url="attachment://family_banner.jpg")
     embed = discord.Embed(
         title=f"🧡 Заявка в семью {config.FAMILY_NAME}",
         description=(
@@ -228,7 +237,8 @@ async def post_family_panel(bot: commands.Bot, channel: discord.TextChannel):
         ),
         colour=COLOUR,
     )
-    await channel.send(embed=embed, view=FamilyApplyView())
+    embeds = [banner, embed] if file else [embed]
+    await channel.send(embeds=embeds, files=[file] if file else [], view=FamilyApplyView())
 
 
 class Family(commands.Cog):

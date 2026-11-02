@@ -527,6 +527,12 @@ class Cinema(commands.Cog):
                 if fid:
                     await films.update_card(guild, fid)
                     films.autofill_later(guild, fid)
+        elif task == "family_panel":  # перевыложить панель заявки в семью (с баннером)
+            from cogs.family import post_family_panel
+            for guild in self.bot.guilds:
+                ch = discord.utils.get(guild.text_channels, name=config.CH_FAMILY_APPLY)
+                if ch:
+                    await post_family_panel(self.bot, ch)
         elif task == "refresh_cards":  # перерисовать все карточки фильмов (после смены вида)
             from cogs import films
             for guild in self.bot.guilds:
