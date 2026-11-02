@@ -89,6 +89,11 @@ CREATE TABLE IF NOT EXISTS fleet (
     guild_id INTEGER, kind TEXT, name TEXT, note TEXT,
     taken_by INTEGER, taken_at INTEGER, done INTEGER DEFAULT 0, created_at INTEGER
 );
+CREATE TABLE IF NOT EXISTS fleet_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    guild_id INTEGER, item_id INTEGER, item_name TEXT, vtype TEXT, kind TEXT,
+    user_id INTEGER, took_at INTEGER, returned_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS badges (
     guild_id INTEGER, key TEXT, data BLOB,
     PRIMARY KEY (guild_id, key)
@@ -128,6 +133,9 @@ async def init(path: str = "bot.db"):
                       ("episodes_total", "INTEGER"), ("episodes_watched", "INTEGER DEFAULT 0")):
         if col not in cols:  # карточки фильмов
             await _conn.execute(f"ALTER TABLE films ADD COLUMN {col} {kind}")
+    cols = [r[1] for r in await (await _conn.execute("PRAGMA table_info(fleet)")).fetchall()]
+    if cols and "vtype" not in cols:
+        await _conn.execute("ALTER TABLE fleet ADD COLUMN vtype TEXT")
     cols = [r[1] for r in await (await _conn.execute("PRAGMA table_info(cinema_sessions)")).fetchall()]
     if "created_ts" not in cols:
         await _conn.execute("ALTER TABLE cinema_sessions ADD COLUMN created_ts INTEGER DEFAULT 0")
