@@ -528,10 +528,9 @@ class Cinema(commands.Cog):
                     await films.update_card(guild, fid)
                     films.autofill_later(guild, fid)
         elif task == "garage":  # перевыложить панели автопарка и контрактов
-            from cogs.garage import update_panels, channel_of
+            from cogs.garage import update_panels
             for guild in self.bot.guilds:
-                if await channel_of(guild):
-                    await update_panels(guild)
+                await update_panels(guild)
         elif task == "family_panel":  # перевыложить панель заявки в семью (с баннером)
             from cogs.family import post_family_panel
             for guild in self.bot.guilds:

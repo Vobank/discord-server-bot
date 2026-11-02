@@ -16,7 +16,7 @@ import config
 import db
 
 log = logging.getLogger(__name__)
-CHANNEL = "🚗・автопарк-и-контракты"
+CHANNELS = {"transport": "🚗・автопарк", "contracts": "🎯・контракты"}
 COLOUR = discord.Colour.from_rgb(*config.ACCENT)
 DEFAULT_TYPES = [{"name": "Машины", "emoji": "🚗"}, {"name": "Вертолёты", "emoji": "🚁"},
                  {"name": "Мотоциклы", "emoji": "🏍️"}, {"name": "Лодки", "emoji": "🚤"}]
@@ -352,37 +352,46 @@ async def history_embed(guild: discord.Guild, kind: str) -> discord.Embed:
 
 
 # ---------- канал и панели ----------
-async def channel_of(guild: discord.Guild) -> discord.TextChannel | None:
-    cid = await db.get_setting(guild.id, "garage_channel")
+async def channel_for(guild: discord.Guild, which: str) -> discord.TextChannel | None:
+    """which: 'transport' — канал автопарка, 'contracts' — канал контрактов (каждый свой)."""
+    name = CHANNELS[which]
+    key = f"garage_{which}_channel"
+    cid = await db.get_setting(guild.id, key)
     ch = guild.get_channel(int(cid)) if cid else None
-    ch = ch or discord.utils.get(guild.text_channels, name=CHANNEL)
+    ch = ch or discord.utils.get(guild.text_channels, name=name)
     if ch is None:
         category = (discord.utils.find(lambda c: "Секта" in c.name, guild.categories)
                     or discord.utils.find(lambda c: config.CAT_FAMILY in c.name, guild.categories))
         if category is None:
             return None
-        ch = await category.create_text_channel(CHANNEL, reason="Автопарк и контракты семьи",
-                                                topic="Транспорт и контракты семьи — бери, возвращай, веди историю")
+        topic = ("Транспорт семьи — бери, возвращай, веди историю" if which == "transport"
+                 else "Контракты семьи — бери, отмечай выполненными, веди историю")
+        ch = await category.create_text_channel(name, reason="Автопарк/контракты семьи", topic=topic)
     if str(ch.id) != cid:
-        await db.set_setting(guild.id, "garage_channel", str(ch.id))
+        await db.set_setting(guild.id, key, str(ch.id))
     return ch
 
 
-async def update_panels(guild: discord.Guild):
-    ch = await channel_of(guild)
-    if not ch:
-        return
+def contracts_panel_view(rows: list[dict]) -> "ContractsPanel":
     cv = ContractsPanel()
-    rows = await contracts(guild.id)
     cv.toggle.options = [discord.SelectOption(
         label=r["name"][:100], value=str(r["id"]),
         description=("выполнен" if r["done"] else "занят" if r["taken_by"] else "свободен"),
         emoji="✅" if r["done"] else ("🔴" if r["taken_by"] else "🟢")) for r in rows[:25]] \
         or [discord.SelectOption(label="Пока нет контрактов — добавь первый", value="none")]
     cv.toggle.disabled = not rows
-    plan = [("garage_transport_msg", await transport_embed(guild), TransportPanel()),
-            ("garage_contracts_msg", await contracts_embed(guild), cv)]
-    for key, embed, view in plan:
+    return cv
+
+
+async def update_panels(guild: discord.Guild):
+    tch = await channel_for(guild, "transport")
+    cch = await channel_for(guild, "contracts")
+    plan = [(tch, "garage_transport_msg", await transport_embed(guild), TransportPanel()),
+            (cch, "garage_contracts_msg", await contracts_embed(guild),
+             contracts_panel_view(await contracts(guild.id)))]
+    for ch, key, embed, view in plan:
+        if not ch:
+            continue
         mid = await db.get_setting(guild.id, key)
         if mid:
             try:
@@ -404,7 +413,7 @@ class Garage(commands.Cog):
     async def on_ready(self):
         for guild in self.bot.guilds:
             try:
-                if await channel_of(guild):
+                if discord.utils.find(lambda c: "Секта" in c.name or config.CAT_FAMILY in c.name, guild.categories):
                     await update_panels(guild)
             except discord.HTTPException:
                 log.exception("Автопарк: не получилось выложить панели")
@@ -415,9 +424,9 @@ class Garage(commands.Cog):
     async def garage(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         await update_panels(interaction.guild)
-        ch = await channel_of(interaction.guild)
-        await interaction.followup.send(f"✅ Готово: {ch.mention}" if ch else "⚠️ Нет категории семьи/секты",
-                                        ephemeral=True)
+        tch = await channel_for(interaction.guild, "transport")
+        await interaction.followup.send(f"✅ Готово: {tch.mention} и канал контрактов" if tch
+                                        else "⚠️ Нет категории семьи/секты", ephemeral=True)
 
 
 async def setup(bot: commands.Bot):
